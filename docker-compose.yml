@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/backend/data  # Persist DB and cache
+    environment:
+      - KITE_API_KEY=${KITE_API_KEY:-}
+      - KITE_API_SECRET=${KITE_API_SECRET:-}
+      - KITE_ACCESS_TOKEN=${KITE_ACCESS_TOKEN:-}
+    restart: unless-stopped
