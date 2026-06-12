@@ -38,10 +38,8 @@ export const getChartData = (symbol, timeframe = 'daily', days = 180) =>
 export const getMatePro = (symbol) =>
   api.get(`/analysis/${symbol}/mate-pro`);
 
-export const getMateProBatch = (symbols = null, runId = null) => {
-  if (runId) return api.post(`/analysis/mate-pro/batch?run_id=${runId}`);
-  return api.post('/analysis/mate-pro/batch', symbols);
-};
+export const getMateProBatch = (symbols = [], runId = null) =>
+  api.post(`/analysis/mate-pro/batch${runId ? `?run_id=${runId}` : ''}`, symbols);
 
 export const getQuotes = (symbols = []) => {
   const qs = Array.isArray(symbols) ? symbols.join(',') : symbols;

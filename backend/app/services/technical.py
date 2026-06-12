@@ -83,7 +83,7 @@ def _calc_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 
     signal_line = _calc_ema(macd_line, signal)
     histogram = macd_line - signal_line
 
-    # Detect crossover
+    
     crossover = "none"
     if len(histogram) >= 2:
         if histogram.iloc[-1] > 0 and histogram.iloc[-2] <= 0:
@@ -184,7 +184,7 @@ def _compute_signal(rsi: float, macd_cross: str, ema_20, ema_50,
     Returns {signal: str, score: float (-100 to 100)}.
     """
     score = 0
-    # Default None values to cmp so comparisons don't fail
+    
     ema_20 = ema_20 if ema_20 is not None else cmp
     ema_50 = ema_50 if ema_50 is not None else cmp
     ema_200 = ema_200 if ema_200 is not None else 0
@@ -197,13 +197,13 @@ def _compute_signal(rsi: float, macd_cross: str, ema_20, ema_50,
     elif rsi < 40:
         score += 15
     elif rsi > 70:
-        score -= 25  # Overbought = caution
+        score -= 25  
     elif rsi > 60:
         score -= 10
     else:
-        score += 5  # Neutral zone, slight positive
+        score += 5  
 
-    # MACD contribution (-20 to +20)
+    
     if macd_cross == "bullish":
         score += 20
     elif macd_cross == "bearish":

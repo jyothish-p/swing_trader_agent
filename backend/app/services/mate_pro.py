@@ -2549,7 +2549,7 @@ def run_mate_pro_batch(
     """Run MATE-PRO analysis on a batch of symbols. Returns sorted list."""
     results = []
     preload_stock_profiles(db, symbols)
-    if mode in {"full", "batch"}:
+    if mode == "full":
         preload_news_tones(db, symbols)
     for sym in symbols:
         try:

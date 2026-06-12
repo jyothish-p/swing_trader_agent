@@ -3,10 +3,13 @@ Technical Analysis API endpoints.
 Detailed analysis, charts, indicators for individual stocks.
 Includes MATE-PRO scoring and custom stock lookup.
 """
+import json
 import logging
 import numpy as np
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
+from app.config import DATA_DIR
 from app.database import get_db
 from app.models import TechnicalAnalysis, ScreeningResult
 from app.services.technical import run_full_analysis, analyze_stock
@@ -16,42 +19,225 @@ from app.services.mate_pro import run_mate_pro_analysis, run_mate_pro_batch
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+RUNS_DIR = Path(DATA_DIR) / "runs"
+
+
+def _load_run_snapshot(run_id: str) -> dict | None:
+    path = RUNS_DIR / f"{run_id}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to load run snapshot for %s in analysis router: %s", run_id, exc)
+        return None
+
+
+def _save_run_snapshot(run_id: str, payload: dict) -> None:
+    path = RUNS_DIR / f"{run_id}.json"
+    path.write_text(json.dumps(_to_python(payload), ensure_ascii=False), encoding="utf-8")
+
+
+def _snapshot_mate_pro_rows(snapshot: dict | None, symbols: list[str]) -> list[dict]:
+    if not snapshot:
+        return []
+    wanted = {symbol.upper() for symbol in symbols}
+    rows = snapshot.get("stocks") or snapshot.get("all_stocks") or snapshot.get("top_stocks") or []
+    matches = []
+    for row in rows:
+        symbol = str(row.get("symbol", "")).upper()
+        mate_pro = row.get("mate_pro")
+        if symbol in wanted and mate_pro:
+            matches.append({"symbol": symbol, **mate_pro})
+    return matches
+
+
+def _verdict_value(row: dict) -> str | None:
+    if row.get("consensus_verdict"):
+        return row.get("consensus_verdict")
+    return (row.get("composite") or {}).get("consensus_verdict")
+
+
+def _mate_pro_snapshot_row(result: dict) -> dict:
+    titan = (result.get("models") or {}).get("titan") or {}
+    titan_v19 = (result.get("models") or {}).get("titan_v19") or {}
+    return {
+        "composite_score": result["composite"]["composite_score"],
+        "composite_probability": result["composite"]["composite_probability"],
+        "consensus_verdict": result["composite"]["consensus_verdict"],
+        "one_line_verdict": result.get("one_line_verdict"),
+        "one_line_verdict_source": result.get("one_line_verdict_source"),
+        "agreement": result["composite"]["agreement"],
+        "model_scores": result["composite"]["model_scores"],
+        "model_verdicts": result["composite"]["model_verdicts"],
+        "action": result["trade_plans"]["scanner_plan"]["action"],
+        "trigger": result["levels"]["trigger"],
+        "stop_loss": result["levels"]["invalidation"],
+        "sl_pct": result["metrics"]["sl_pct"],
+        "targets": result["trade_plans"]["scanner_plan"]["targets"],
+        "rr_t2": result["trade_plans"]["scanner_plan"]["rr_t2"],
+        "pattern": result["context"]["pattern"],
+        "phase": result["context"]["phase"],
+        "titan_v20": {
+            "model": titan.get("model"),
+            "liquidity_gate": titan.get("liquidity_gate"),
+            "selection_grade": titan.get("selection_grade"),
+            "selection_action": titan.get("selection_action"),
+            "setup_family": titan.get("setup_family"),
+            "base_weekly_score": titan.get("base_weekly_score"),
+            "sector_momentum_score": ((titan.get("sector_context") or {}).get("sector_momentum_score")),
+            "sector_index": ((titan.get("sector_context") or {}).get("sector_index")),
+            "sector_weekly_rsi": ((titan.get("sector_context") or {}).get("sector_weekly_rsi")),
+            "sector_structure": ((titan.get("sector_context") or {}).get("sector_structure")),
+            "sector_perf_1m": ((titan.get("sector_context") or {}).get("sector_perf_1m")),
+            "sector_perf_3m": ((titan.get("sector_context") or {}).get("sector_perf_3m")),
+            "sector_positive_peers": ((titan.get("sector_context") or {}).get("sector_positive_peers")),
+            "sector_peer_avg_perf_1m": ((titan.get("sector_context") or {}).get("sector_peer_avg_perf_1m")),
+            "news_tone": ((titan.get("sentiment_filter") or {}).get("news_tone")),
+            "market_mood": ((titan.get("sentiment_filter") or {}).get("nifty_mood")),
+            "retail_psych": ((titan.get("sentiment_filter") or {}).get("retail_psych")),
+            "sentiment_score": ((titan.get("sentiment_filter") or {}).get("sentiment_score")),
+        },
+        "titan_v19": {
+            "model": titan_v19.get("model"),
+            "liquidity_gate": titan_v19.get("liquidity_gate"),
+            "selection_grade": titan_v19.get("selection_grade"),
+            "selection_action": titan_v19.get("selection_action"),
+            "setup_family": titan_v19.get("setup_family"),
+        },
+    }
+
+
+def _build_base_snapshot(db: Session, run_id: str) -> dict:
+    results = db.query(ScreeningResult).filter(
+        ScreeningResult.run_id == run_id
+    ).order_by(ScreeningResult.composite_score.desc()).all()
+
+    return {
+        "run_id": run_id,
+        "total": len(results),
+        "stocks": [
+            {
+                "rank": index + 1,
+                "symbol": row.symbol,
+                "cmp": row.cmp,
+                "high_52w": row.high_52w,
+                "pct_from_52w": row.pct_from_52w,
+                "is_1m_new_high": row.is_1m_new_high,
+                "vol_ratio_1d": row.vol_ratio_1d,
+                "turnover_avg_cr": row.turnover_avg_cr,
+                "momentum_1w": row.momentum_1w,
+                "momentum_1m": row.momentum_1m,
+                "reports_count": row.reports_count,
+                "composite_score": row.composite_score,
+                "market_cap_cr": row.market_cap_cr,
+                "reports": {
+                    "52w_high": row.in_52w_high_report,
+                    "1m_high_daily_vol": row.in_1m_high_daily_vol,
+                    "1m_high_monthly_vol": row.in_1m_high_monthly_vol,
+                    "oi_surge": row.in_oi_surge,
+                    "index_movers": row.in_index_movers,
+                },
+            }
+            for index, row in enumerate(results)
+        ],
+        "actionable_stocks": [],
+        "mate_pro_summary": None,
+    }
+
+
+def _summarize_snapshot(snapshot: dict) -> None:
+    rows = snapshot.get("stocks") or snapshot.get("all_stocks") or snapshot.get("top_stocks") or []
+    verdicts = [_verdict_value(row.get("mate_pro") or {}) for row in rows if row.get("mate_pro")]
+    if not verdicts:
+        snapshot["mate_pro_summary"] = None
+        return
+
+    snapshot["mate_pro_summary"] = {
+        "total_analyzed": len(verdicts),
+        "strong_buy": len([v for v in verdicts if v == "STRONG BUY"]),
+        "buy": len([v for v in verdicts if v == "BUY"]),
+        "hold": len([v for v in verdicts if v == "HOLD"]),
+        "wait": len([v for v in verdicts if v == "WAIT"]),
+        "avoid": len([v for v in verdicts if v == "AVOID"]),
+    }
+
+
+def _repair_run_snapshot(db: Session, run_id: str, computed_results: list[dict]) -> None:
+    snapshot = _load_run_snapshot(run_id) or _build_base_snapshot(db, run_id)
+    rows = snapshot.get("stocks") or snapshot.get("all_stocks") or snapshot.get("top_stocks") or []
+    by_symbol = {str(row.get("symbol", "")).upper(): row for row in rows}
+
+    changed = False
+    for result in computed_results:
+        symbol = result["symbol"].upper()
+        row = by_symbol.get(symbol)
+        if not row:
+            continue
+        row["mate_pro"] = _mate_pro_snapshot_row(result)
+        changed = True
+
+    if not changed:
+        return
+
+    snapshot["total"] = len(rows)
+    snapshot["stocks"] = rows
+    _summarize_snapshot(snapshot)
+    _save_run_snapshot(run_id, snapshot)
 
 
 # ── MATE-PRO endpoints (must be BEFORE /{symbol} catch-all) ──
 
 @router.post("/mate-pro/batch")
-async def run_mate_pro_batch_analysis(
+def run_mate_pro_batch_analysis(
     symbols: list[str] = Body(None),
     run_id: str = Query(None, description="Use top stocks from this screener run"),
     db: Session = Depends(get_db),
 ):
     """Run MATE-PRO analysis on multiple stocks."""
-    if run_id and not symbols:
-        results = db.query(ScreeningResult).filter(
-            ScreeningResult.run_id == run_id
-        ).order_by(ScreeningResult.composite_score.desc()).limit(20).all()
-        symbols = [r.symbol for r in results]
+    symbols = [symbol.upper() for symbol in (symbols or []) if symbol]
+    snapshot_results: list[dict] = []
+
+    if run_id:
+        if not symbols:
+            results = db.query(ScreeningResult).filter(
+                ScreeningResult.run_id == run_id
+            ).order_by(ScreeningResult.composite_score.desc()).limit(20).all()
+            symbols = [r.symbol for r in results]
+
+        snapshot_results = _snapshot_mate_pro_rows(_load_run_snapshot(run_id), symbols)
 
     if not symbols:
         raise HTTPException(status_code=400, detail="Provide symbols or run_id")
 
-    results = run_mate_pro_batch(db, symbols, allow_llm_verdict=False)
+    cached_symbols = {row["symbol"] for row in snapshot_results}
+    missing_symbols = [symbol for symbol in symbols if symbol not in cached_symbols]
+    computed_results = []
+    if missing_symbols:
+        computed_results = run_mate_pro_batch(db, missing_symbols, mode="batch", allow_llm_verdict=False)
+        if run_id and computed_results:
+            _repair_run_snapshot(db, run_id, computed_results)
+
+    merged_map = {row["symbol"]: row for row in snapshot_results}
+    for row in computed_results:
+        merged_map[row["symbol"]] = row
+
+    results = [merged_map[symbol] for symbol in symbols if symbol in merged_map]
     return {
         "total": len(results),
         "stocks": results,
         "summary": {
-            "strong_buy": len([r for r in results if r["composite"]["consensus_verdict"] == "STRONG BUY"]),
-            "buy": len([r for r in results if r["composite"]["consensus_verdict"] == "BUY"]),
-            "hold": len([r for r in results if r["composite"]["consensus_verdict"] == "HOLD"]),
-            "wait": len([r for r in results if r["composite"]["consensus_verdict"] == "WAIT"]),
-            "avoid": len([r for r in results if r["composite"]["consensus_verdict"] == "AVOID"]),
+            "strong_buy": len([r for r in results if _verdict_value(r) == "STRONG BUY"]),
+            "buy": len([r for r in results if _verdict_value(r) == "BUY"]),
+            "hold": len([r for r in results if _verdict_value(r) == "HOLD"]),
+            "wait": len([r for r in results if _verdict_value(r) == "WAIT"]),
+            "avoid": len([r for r in results if _verdict_value(r) == "AVOID"]),
         },
     }
 
 
 @router.post("/lookup")
-async def lookup_stock(
+def lookup_stock(
     symbol: str = Body(..., embed=True),
     db: Session = Depends(get_db),
 ):
@@ -130,7 +316,7 @@ async def lookup_stock(
 # ── Standard analysis endpoints ──
 
 @router.get("/{symbol}/mate-pro")
-async def get_mate_pro_analysis(
+def get_mate_pro_analysis(
     symbol: str,
     db: Session = Depends(get_db),
 ):
@@ -150,7 +336,7 @@ async def get_mate_pro_analysis(
 
 
 @router.get("/{symbol}/chart-data")
-async def get_chart_data(
+def get_chart_data(
     symbol: str,
     timeframe: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
     days: int = Query(180, ge=30, le=365),
@@ -207,7 +393,7 @@ async def get_chart_data(
 
 
 @router.get("/{symbol}")
-async def get_analysis(
+def get_analysis(
     symbol: str,
     run_id: str = Query(None, description="Screener run ID. If omitted, computes fresh."),
     db: Session = Depends(get_db),

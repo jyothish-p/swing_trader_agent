@@ -11,13 +11,15 @@ and `source`.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 import requests
 
-from app.config import NSE_SUFFIX
+from app.config import CACHE_TTL_QUOTES, NSE_SUFFIX
 
 logger = logging.getLogger(__name__)
+_QUOTE_CACHE: dict[str, tuple[float, dict]] = {}
 
 _BROWSER_HEADERS = {
     "User-Agent": (
@@ -45,6 +47,22 @@ def _to_float(v: Optional[object]) -> Optional[float]:
 def _to_int(v: Optional[object]) -> Optional[int]:
     f = _to_float(v)
     return int(f) if f is not None else None
+
+
+def _cache_get(symbol: str) -> Optional[dict]:
+    entry = _QUOTE_CACHE.get(symbol)
+    if not entry:
+        return None
+    expires_at, payload = entry
+    if time.time() >= expires_at:
+        _QUOTE_CACHE.pop(symbol, None)
+        return None
+    return payload
+
+
+def _cache_set(symbol: str, payload: dict) -> dict:
+    _QUOTE_CACHE[symbol] = (time.time() + max(1, CACHE_TTL_QUOTES), payload)
+    return payload
 
 
 def get_quote_nse(symbol: str, timeout: int = 2) -> Optional[dict]:
@@ -155,6 +173,63 @@ def get_quote_tradingview(symbol: str, timeout: int = 8) -> Optional[dict]:
         return None
 
 
+def get_quotes_tradingview_batch(symbols: list[str], timeout: int = 8) -> dict[str, dict]:
+    """Fetch many NSE quotes in one TradingView scanner call."""
+    tickers = [f"NSE:{symbol.upper()}" for symbol in symbols if symbol]
+    if not tickers:
+        return {}
+
+    try:
+        payload = {
+            "symbols": {"tickers": tickers, "query": {"types": []}},
+            "columns": ["close", "change", "volume"],
+        }
+        response = requests.post(
+            "https://scanner.tradingview.com/india/scan",
+            headers={
+                **_BROWSER_HEADERS,
+                "Content-Type": "application/json",
+                "Origin": "https://www.tradingview.com",
+                "Referer": "https://www.tradingview.com/",
+            },
+            json=payload,
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            logger.debug("TradingView batch quote HTTP %s for %s symbols", response.status_code, len(tickers))
+            return {}
+
+        rows = response.json().get("data") or []
+        results: dict[str, dict] = {}
+        for row in rows:
+            symbol = row.get("s", "").split(":", 1)[-1].strip().upper()
+            values = row.get("d") or []
+            last = _to_float(values[0] if len(values) > 0 else None)
+            change_pct = _to_float(values[1] if len(values) > 1 else None)
+            volume = _to_int(values[2] if len(values) > 2 else None)
+
+            if last is None or not symbol:
+                continue
+
+            change = None
+            if change_pct is not None:
+                prev_close = last / (1 + (change_pct / 100)) if change_pct != -100 else None
+                change = round(last - prev_close, 2) if prev_close not in (None, 0) else None
+
+            results[symbol] = _cache_set(symbol, {
+                "symbol": symbol,
+                "last_price": last,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": volume,
+                "source": "TradingView",
+            })
+        return results
+    except Exception as exc:
+        logger.debug("TradingView batch quote failed for %s symbols: %s", len(tickers), exc)
+        return {}
+
+
 def get_quote_yfinance(symbol: str) -> Optional[dict]:
     """Fallback using yfinance to get a recent price snapshot."""
     try:
@@ -200,10 +275,39 @@ def get_quote_yfinance(symbol: str) -> Optional[dict]:
 def get_live_quote(symbol: str) -> dict:
     """Unified live quote lookup."""
     sym = symbol.upper()
+    cached = _cache_get(sym)
+    if cached:
+        return cached
 
     for fetcher in (get_quote_tradingview, get_quote_nse, get_quote_yfinance):
         quote = fetcher(sym)
         if quote and quote.get("last_price") is not None:
-            return quote
+            return _cache_set(sym, quote)
 
     return {"symbol": sym, "last_price": None, "source": "none"}
+
+
+def get_live_quotes_batch(symbols: list[str]) -> dict[str, dict]:
+    """Batch quote lookup with TradingView-first fan-in and cached fallbacks."""
+    normalized = [symbol.strip().upper() for symbol in symbols if symbol and symbol.strip()]
+    if not normalized:
+        return {}
+
+    results: dict[str, dict] = {}
+    missing: list[str] = []
+
+    for symbol in normalized:
+        cached = _cache_get(symbol)
+        if cached:
+            results[symbol] = cached
+        else:
+            missing.append(symbol)
+
+    if missing:
+        results.update(get_quotes_tradingview_batch(missing))
+
+    still_missing = [symbol for symbol in normalized if symbol not in results]
+    for symbol in still_missing:
+        results[symbol] = get_live_quote(symbol)
+
+    return results

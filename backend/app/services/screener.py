@@ -390,9 +390,8 @@ def run_screener(db: Session, symbols: list[str], run_id: str | None = None) -> 
 
     elapsed = round(time.time() - start, 2)
 
-    # Update run record
-    run_record.completed_at = datetime.utcnow()
-    run_record.status = "completed"
+    # Save counts now, but keep the run "running" until post-screen enrichment
+    # (MATE-PRO, actionable extraction, snapshot save) has really finished.
     run_record.filtered_stocks = len(all_metrics)
     run_record.top_stocks = len(top_stocks)
     db.commit()

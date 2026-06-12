@@ -8,6 +8,23 @@ const SORT_OPTIONS = {
   DESC: 'desc',
   ASC: 'asc',
 };
+const STALE_RUN_MS = 10 * 60 * 1000;
+const LIVE_REFRESH_MS = 60 * 1000;
+
+function normalizeScreenerResult(payload, fallbackRunId = null) {
+  const allStocks = payload?.all_stocks || payload?.stocks || payload?.top_stocks || [];
+  const topStocks = payload?.top_stocks || payload?.stocks || payload?.all_stocks || [];
+
+  return {
+    run_id: payload?.run_id || fallbackRunId,
+    all_stocks: allStocks,
+    top_stocks: topStocks,
+    total_analyzed: payload?.total_analyzed || payload?.total || payload?.screening?.analyzed || allStocks.length,
+    mate_pro_summary: payload?.mate_pro_summary || null,
+    actionable_stocks: payload?.actionable_stocks || [],
+    universe_size: payload?.universe_size || payload?.total || payload?.screening?.analyzed || allStocks.length,
+  };
+}
 
 function getCompositeValue(stock) {
   const composite = stock?.mate_pro?.composite_score ?? stock?.composite_score;
@@ -45,6 +62,10 @@ export default function Dashboard() {
   const [actionableSortOrder, setActionableSortOrder] = useState(SORT_OPTIONS.DESC);
 
   const displayStocks = useMemo(() => result?.all_stocks || result?.top_stocks || [], [result?.all_stocks, result?.top_stocks]);
+  const latestCompletedRunId = useMemo(
+    () => runs.find((run) => run.status === 'completed')?.run_id || null,
+    [runs]
+  );
 
   useEffect(() => {
     loadRuns(true);
@@ -63,21 +84,22 @@ export default function Dashboard() {
         if (cancelled) return;
 
         if (data.status === 'completed') {
-          const payload = data.result || (await getScreenerResults(activeRunId)).data;
-          if (cancelled) return;
-          setResult({
-            run_id: activeRunId,
-            all_stocks: payload.all_stocks || payload.stocks || payload.top_stocks || [],
-            top_stocks: payload.top_stocks || payload.stocks || payload.all_stocks || [],
-            total_analyzed: payload.total_analyzed || payload.total || payload.screening?.analyzed,
-            mate_pro_summary: payload.mate_pro_summary || null,
-            actionable_stocks: payload.actionable_stocks || [],
-            universe_size: payload.universe_size,
-          });
-          setStatus('');
-          setLoading(false);
-          setActiveRunId(null);
-          loadRuns(false);
+          try {
+            const payload = data.result || (await getScreenerResults(activeRunId)).data;
+            if (cancelled) return;
+            setResult(normalizeScreenerResult(payload, activeRunId));
+            setError('');
+            setStatus('');
+            setLoading(false);
+            setActiveRunId(null);
+            loadRuns(false);
+          } catch (e) {
+            if (cancelled) return;
+            setError(e.response?.data?.detail || e.message || 'Failed to load screener results');
+            setStatus('');
+            setLoading(false);
+            setActiveRunId(null);
+          }
           return;
         }
 
@@ -108,14 +130,66 @@ export default function Dashboard() {
     };
   }, [activeRunId]);
 
+  useEffect(() => {
+    if (loading || activeRunId) return undefined;
+    if (result?.run_id && latestCompletedRunId && result.run_id !== latestCompletedRunId) return undefined;
+
+    let cancelled = false;
+
+    const refreshLatestRun = async () => {
+      try {
+        const runsResponse = await getScreenerRuns(5);
+        const latestRuns = runsResponse.data.runs || [];
+        if (cancelled) return;
+
+        setRuns(latestRuns);
+        const latestCompleted = latestRuns.find((run) => run.status === 'completed');
+        if (!latestCompleted) return;
+        if (result?.run_id === latestCompleted.run_id) return;
+
+        const resultsResponse = await getScreenerResults(latestCompleted.run_id);
+        if (cancelled) return;
+
+        setResult(normalizeScreenerResult(resultsResponse.data, latestCompleted.run_id));
+        setError('');
+      } catch (e) {
+        if (!cancelled) {
+          console.error('Live dashboard refresh failed:', e);
+        }
+      }
+    };
+
+    const intervalId = setInterval(refreshLatestRun, LIVE_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [activeRunId, latestCompletedRunId, loading, result?.run_id]);
+
   async function loadRuns(autoLoadLatest = false) {
     try {
       const res = await getScreenerRuns(5);
-      setRuns(res.data.runs || []);
+      const latestRuns = res.data.runs || [];
+      setRuns(latestRuns);
       if (autoLoadLatest) {
-        const latest = res.data.runs?.find(r => r.status === 'completed');
+        const running = latestRuns.find((r) => (
+          r.status === 'running'
+          && r.started_at
+          && (Date.now() - Date.parse(r.started_at)) < STALE_RUN_MS
+        ));
+        if (running) {
+          setLoading(true);
+          setStatus('Resuming latest screener run...');
+          setActiveRunId(running.run_id);
+          return;
+        }
+
+        const latest = latestRuns.find(r => r.status === 'completed');
         if (latest) {
           await loadRunResults(latest.run_id);
+        } else {
+          setLoading(false);
+          setStatus('');
         }
       }
     } catch (e) {
@@ -126,16 +200,17 @@ export default function Dashboard() {
   async function loadRunResults(runId) {
     try {
       const res = await getScreenerResults(runId);
-      setResult({
-        run_id: runId,
-        all_stocks: res.data.stocks || [],
-        top_stocks: res.data.stocks || [],
-        total_analyzed: res.data.total,
-        mate_pro_summary: res.data.mate_pro_summary || null,
-        actionable_stocks: res.data.actionable_stocks || [],
-      });
+      setResult(normalizeScreenerResult(res.data, runId));
+      setError('');
+      setStatus('');
+      setLoading(false);
+      setActiveRunId(null);
     } catch (e) {
       console.error('Failed to load run results:', e);
+      setError(e.response?.data?.detail || e.message || 'Failed to load screener results');
+      setLoading(false);
+      setStatus('');
+      setActiveRunId(null);
     }
   }
 

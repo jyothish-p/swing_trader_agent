@@ -20,13 +20,15 @@ DATABASE_URL = os.getenv(
 )
 
 # Screening parameters
-MIN_MARKET_CAP_CR = 5_000  # ₹5,000 Crore minimum (Large + Mid cap)
-MIN_TURNOVER_CR = 10  # ₹10 Cr average daily turnover
+UNIVERSE_MODE = os.getenv("UNIVERSE_MODE", "focused").strip().lower()
+UNIVERSE_MIN_MARKET_CAP_CR = float(os.getenv("UNIVERSE_MIN_MARKET_CAP_CR", "5000"))
+MIN_TURNOVER_CR = 10  # Rs10 Cr average daily turnover
 TOP_N_STOCKS = 20  # Number of top stocks to select
 ACTIONABLE_TOP_N = 20  # Number of actionable stocks to show
 LOOKBACK_DAYS = 365  # 1 year of historical data
 LOOKBACK_1M_DAYS = 22  # ~1 month trading days
 NEW_HIGH_TOLERANCE = 0.01  # 1% tolerance for new high detection
+HISTORICAL_DOWNLOAD_BATCH_SIZE = int(os.getenv("HISTORICAL_DOWNLOAD_BATCH_SIZE", "150"))
 
 # Technical analysis timeframes
 EMA_PERIODS = [20, 50, 100, 200]
@@ -70,4 +72,4 @@ CORS_ORIGINS = ["http://localhost:5174", "http://localhost:5173", "http://localh
 # Cache TTL (seconds)
 CACHE_TTL_UNIVERSE = 86400  # 24 hours - F&O list doesn't change intraday
 CACHE_TTL_HISTORICAL = 3600  # 1 hour - historical data refreshed hourly max
-CACHE_TTL_QUOTES = 60  # 1 minute - real-time quotes
+CACHE_TTL_QUOTES = int(os.getenv("CACHE_TTL_QUOTES", "15"))  # short-lived quote cache for dashboard refreshes

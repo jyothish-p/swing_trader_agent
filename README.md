@@ -100,8 +100,10 @@ swing-trader/
 
 ## Configuration
 
-Edit `backend/app/config.py` to adjust:
-- `MIN_MARKET_CAP_CR` — Market cap filter (default: ₹5,000 Cr)
+Edit `backend/app/config.py` or environment variables to adjust:
+- `UNIVERSE_MODE` — `focused` for the filtered large-cap universe, or `tradingview_all` for the broad NSE universe
+- `UNIVERSE_MIN_MARKET_CAP_CR` — Market-cap floor for the universe (default: `5000`)
+- `HISTORICAL_DOWNLOAD_BATCH_SIZE` — yfinance chunk size for very large runs (default: `150`)
 - `TOP_N_STOCKS` — Number of top stocks shown (default: 20)
 - `ACTIONABLE_TOP_N` — Max actionable signals (default: 20)
 - `LOOKBACK_DAYS` — Historical data window (default: 365 days)

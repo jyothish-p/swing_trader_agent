@@ -8,19 +8,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import DailyCandle, Stock, DeliveryData
-from app.services.live_data import get_live_quote
+from app.services.live_data import get_live_quote, get_live_quotes_batch
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.get("/universe")
-async def get_universe(db: Session = Depends(get_db)):
-    """Get all stocks in the current F&O universe."""
-    stocks = db.query(Stock).filter(
-        Stock.is_active == True,
-        Stock.is_fno == True
-    ).order_by(Stock.market_cap_cr.desc()).all()
+def get_universe(
+    fno_only: bool = Query(False, description="Return only F&O stocks"),
+    db: Session = Depends(get_db),
+):
+    """Get the current active stock universe."""
+    query = db.query(Stock).filter(Stock.is_active == True)
+    if fno_only:
+        query = query.filter(Stock.is_fno == True)
+    stocks = query.order_by(Stock.market_cap_cr.desc()).all()
 
     return {
         "total": len(stocks),
@@ -38,7 +41,7 @@ async def get_universe(db: Session = Depends(get_db)):
 
 
 @router.get("/{symbol}/price-history")
-async def get_price_history(
+def get_price_history(
     symbol: str,
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
@@ -87,7 +90,7 @@ async def get_price_history(
 
 
 @router.get("/{symbol}/delivery")
-async def get_delivery_data(
+def get_delivery_data(
     symbol: str,
     days: int = Query(30, ge=1, le=90),
     db: Session = Depends(get_db),
@@ -159,7 +162,7 @@ async def get_delivery_data(
 
 
 @router.get("/{symbol}/quote")
-async def get_live_stock_quote(symbol: str):
+def get_live_stock_quote(symbol: str):
     """Return a small live quote snapshot for a given symbol.
 
     Tries the NSE API first, then falls back to yfinance.
@@ -172,7 +175,7 @@ async def get_live_stock_quote(symbol: str):
 
 
 @router.get("/quotes")
-async def get_live_quotes(
+def get_live_quotes(
     symbols: str = Query(..., description="Comma separated symbols, e.g. RELIANCE,INFY"),
 ):
     """Get live quotes for multiple symbols in one request.
@@ -183,17 +186,4 @@ async def get_live_quotes(
     if not syms:
         raise HTTPException(status_code=400, detail="No symbols provided")
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    results: dict = {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = {ex.submit(get_live_quote, s): s for s in syms}
-        for fut in as_completed(futures):
-            s = futures[fut]
-            try:
-                q = fut.result()
-                results[s] = q
-            except Exception as e:
-                results[s] = {"symbol": s, "last_price": None, "source": "error", "error": str(e)}
-
-    return results
+    return get_live_quotes_batch(syms)

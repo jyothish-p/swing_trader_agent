@@ -1,22 +1,82 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getQuotes } from '../lib/api';
+import { getMateProBatch, getQuotes } from '../lib/api';
 
 const PAGE_SIZE = 20;
+
+function toMateProSummary(result) {
+  if (result?.model_scores && !result?.models) {
+    return result;
+  }
+
+  const titan = result?.models?.titan || {};
+  const titanV19 = result?.models?.titan_v19 || {};
+  const composite = result?.composite || {};
+  const scannerPlan = result?.trade_plans?.scanner_plan || {};
+  const context = result?.context || {};
+  const metrics = result?.metrics || {};
+
+  return {
+    composite_score: composite.composite_score,
+    composite_probability: composite.composite_probability,
+    consensus_verdict: composite.consensus_verdict,
+    one_line_verdict: result?.one_line_verdict,
+    one_line_verdict_source: result?.one_line_verdict_source,
+    agreement: composite.agreement,
+    model_scores: composite.model_scores,
+    model_verdicts: composite.model_verdicts,
+    action: scannerPlan.action,
+    trigger: result?.levels?.trigger,
+    stop_loss: result?.levels?.invalidation,
+    sl_pct: metrics.sl_pct,
+    targets: scannerPlan.targets,
+    rr_t2: scannerPlan.rr_t2,
+    pattern: context.pattern,
+    phase: context.phase,
+    titan_v20: {
+      model: titan.model,
+      liquidity_gate: titan.liquidity_gate,
+      selection_grade: titan.selection_grade,
+      selection_action: titan.selection_action,
+      setup_family: titan.setup_family,
+      base_weekly_score: titan.base_weekly_score,
+      sector_momentum_score: titan.sector_context?.sector_momentum_score,
+      sector_index: titan.sector_context?.sector_index,
+      sector_weekly_rsi: titan.sector_context?.sector_weekly_rsi,
+      sector_structure: titan.sector_context?.sector_structure,
+      sector_perf_1m: titan.sector_context?.sector_perf_1m,
+      sector_perf_3m: titan.sector_context?.sector_perf_3m,
+      sector_positive_peers: titan.sector_context?.sector_positive_peers,
+      sector_peer_avg_perf_1m: titan.sector_context?.sector_peer_avg_perf_1m,
+      news_tone: titan.sentiment_filter?.news_tone,
+      market_mood: titan.sentiment_filter?.nifty_mood,
+      retail_psych: titan.sentiment_filter?.retail_psych,
+      sentiment_score: titan.sentiment_filter?.sentiment_score,
+    },
+    titan_v19: {
+      model: titanV19.model,
+      liquidity_gate: titanV19.liquidity_gate,
+      selection_grade: titanV19.selection_grade,
+      selection_action: titanV19.selection_action,
+      setup_family: titanV19.setup_family,
+    },
+  };
+}
 
 function VerdictBadge({ verdict, probability }) {
   const colors = {
     'STRONG BUY': 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
-    'BUY': 'bg-green-500/20 text-green-300 border-green-500/40',
-    'HOLD': 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-    'WAIT': 'bg-orange-500/20 text-orange-300 border-orange-500/40',
-    'AVOID': 'bg-red-500/20 text-red-300 border-red-500/40',
-    'SKIP': 'bg-red-500/20 text-red-300 border-red-500/40',
+    BUY: 'bg-green-500/20 text-green-300 border-green-500/40',
+    HOLD: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    WAIT: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
+    AVOID: 'bg-red-500/20 text-red-300 border-red-500/40',
+    SKIP: 'bg-red-500/20 text-red-300 border-red-500/40',
   };
   const cls = colors[verdict] || 'bg-slate-500/20 text-slate-300 border-slate-500/40';
+
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold border ${cls}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs font-bold ${cls}`}>
       {verdict}
       {probability !== undefined && (
         <span className="font-mono opacity-75">{probability}%</span>
@@ -27,79 +87,92 @@ function VerdictBadge({ verdict, probability }) {
 
 function ScoreBar({ label, score, max = 100, color }) {
   const pct = Math.min(100, Math.round((score / max) * 100));
-  const barColor = score >= 75 ? 'bg-emerald-400' : score >= 55 ? 'bg-green-400' : score >= 40 ? 'bg-amber-400' : score >= 25 ? 'bg-orange-400' : 'bg-red-400';
+  const barColor = score >= 75 ? 'bg-emerald-400'
+    : score >= 55 ? 'bg-green-400'
+      : score >= 40 ? 'bg-amber-400'
+        : score >= 25 ? 'bg-orange-400'
+          : 'bg-red-400';
+
   return (
-    <div className="flex items-center gap-1.5 min-w-[96px] sm:min-w-[112px]">
+    <div className="flex min-w-[96px] items-center gap-1.5 sm:min-w-[112px]">
       <span className="w-4 text-right text-[10px] font-medium text-slate-400">{label}</span>
-      <div className="w-14 sm:w-20 bg-slate-700 rounded-full h-2 overflow-hidden">
+      <div className="h-2 w-14 overflow-hidden rounded-full bg-slate-700 sm:w-20">
         <div className={`h-full rounded-full ${color || barColor}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-6 text-right text-[11px] font-mono text-slate-300">{score}</span>
+      <span className="w-6 text-right font-mono text-[11px] text-slate-300">{score}</span>
     </div>
   );
 }
 
 function ActionBadge({ action }) {
-  if (!action) return <span className="text-slate-600">—</span>;
-  const cls = action === 'TRADE' ? 'bg-emerald-500/20 text-emerald-300'
-    : action === 'WAIT RETEST' ? 'bg-amber-500/20 text-amber-300'
-    : 'bg-red-500/20 text-red-300';
+  if (!action) return <span className="text-slate-600">-</span>;
+
+  const cls = action === 'TRADE'
+    ? 'bg-emerald-500/20 text-emerald-300'
+    : action === 'WAIT RETEST'
+      ? 'bg-amber-500/20 text-amber-300'
+      : 'bg-red-500/20 text-red-300';
+
   return (
-    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${cls}`}>{action}</span>
+    <span className={`rounded px-2 py-0.5 text-xs font-semibold ${cls}`}>{action}</span>
   );
 }
 
 function TitanMeta({ meta }) {
   if (!meta) return null;
+
   const gateCls = meta.liquidity_gate === 'PASS'
-    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-    : 'bg-red-500/15 text-red-300 border-red-500/30';
+    ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
+    : 'border-red-500/30 bg-red-500/15 text-red-300';
   const gradeCls = meta.selection_grade === 'A+' || meta.selection_grade === 'A'
-    ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+    ? 'border-blue-500/30 bg-blue-500/15 text-blue-300'
     : meta.selection_grade === 'B'
-      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-      : 'bg-slate-700 text-slate-300 border-slate-600';
+      ? 'border-amber-500/30 bg-amber-500/15 text-amber-300'
+      : 'border-slate-600 bg-slate-700 text-slate-300';
+
   return (
     <div className="mt-1 flex flex-wrap gap-1">
-      {meta.liquidity_gate && <span className={`text-[10px] px-1.5 py-0.5 rounded border ${gateCls}`}>Gate {meta.liquidity_gate}</span>}
-      {meta.selection_grade && <span className={`text-[10px] px-1.5 py-0.5 rounded border ${gradeCls}`}>Grade {meta.selection_grade}</span>}
-      {meta.selection_action && <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-300">{meta.selection_action}</span>}
+      {meta.liquidity_gate && <span className={`rounded border px-1.5 py-0.5 text-[10px] ${gateCls}`}>Gate {meta.liquidity_gate}</span>}
+      {meta.selection_grade && <span className={`rounded border px-1.5 py-0.5 text-[10px] ${gradeCls}`}>Grade {meta.selection_grade}</span>}
+      {meta.selection_action && <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300">{meta.selection_action}</span>}
     </div>
   );
 }
 
 function TitanContextMeta({ meta }) {
   if (!meta) return null;
+
   const toneCls = meta.news_tone === 'Positive'
-    ? 'text-emerald-300 border-emerald-500/30'
+    ? 'border-emerald-500/30 text-emerald-300'
     : meta.news_tone === 'Negative'
-      ? 'text-red-300 border-red-500/30'
-      : 'text-slate-300 border-slate-600';
+      ? 'border-red-500/30 text-red-300'
+      : 'border-slate-600 text-slate-300';
+
   return (
     <div className="mt-1 flex flex-wrap gap-1">
       {meta.sector_index && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-300">
+        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300">
           {meta.sector_index}
           {meta.sector_weekly_rsi != null ? ` RSI ${Number(meta.sector_weekly_rsi).toFixed(1)}` : ''}
         </span>
       )}
       {meta.sector_momentum_score != null && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-300">
+        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300">
           Sector {meta.sector_momentum_score}/10
         </span>
       )}
       {meta.news_tone && (
-        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${toneCls}`}>
+        <span className={`rounded border px-1.5 py-0.5 text-[10px] ${toneCls}`}>
           News {meta.news_tone}
         </span>
       )}
       {meta.market_mood && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-300">
+        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300">
           Market {meta.market_mood}
         </span>
       )}
       {meta.retail_psych && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-300">
+        <span className="rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300">
           Retail {meta.retail_psych}
         </span>
       )}
@@ -109,45 +182,45 @@ function TitanContextMeta({ meta }) {
 
 function Pagination({ page, totalPages, onPageChange, totalItems, pageSize }) {
   if (totalPages <= 1) return null;
+
   const start = page * pageSize + 1;
   const end = Math.min((page + 1) * pageSize, totalItems);
+  const firstPage = Math.max(0, page - 3);
+  const lastPage = Math.min(totalPages, page + 4);
 
   return (
-    <div className="flex items-center justify-between mt-3 px-1">
+    <div className="mt-3 flex items-center justify-between px-1">
       <span className="text-xs text-slate-500">
-        Showing {start}–{end} of {totalItems}
+        Showing {start}-{end} of {totalItems}
       </span>
       <div className="flex items-center gap-1">
         <button
           onClick={() => onPageChange(page - 1)}
           disabled={page === 0}
-          className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-400"
+          className="rounded p-1 text-slate-400 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
         >
-          <ChevronLeft className="w-4 h-4" />
+          <ChevronLeft className="h-4 w-4" />
         </button>
-        {Array.from({ length: totalPages }, (_, i) => (
-          <button
-            key={i}
-            onClick={() => onPageChange(i)}
-            className={`w-7 h-7 rounded text-xs font-medium ${
-              i === page
-                ? 'bg-blue-600 text-white'
-                : 'text-slate-400 hover:bg-slate-700'
-            }`}
-          >
-            {i + 1}
-          </button>
-        )).slice(
-          Math.max(0, page - 3),
-          Math.min(totalPages, page + 4)
-        )}
-        {page + 4 < totalPages && <span className="text-slate-500 text-xs px-1">...</span>}
+        {Array.from({ length: totalPages }, (_, index) => index)
+          .slice(firstPage, lastPage)
+          .map((index) => (
+            <button
+              key={index}
+              onClick={() => onPageChange(index)}
+              className={`h-7 w-7 rounded text-xs font-medium ${
+                index === page ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-700'
+              }`}
+            >
+              {index + 1}
+            </button>
+          ))}
+        {lastPage < totalPages && <span className="px-1 text-xs text-slate-500">...</span>}
         <button
           onClick={() => onPageChange(page + 1)}
           disabled={page >= totalPages - 1}
-          className="p-1 rounded hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-400"
+          className="rounded p-1 text-slate-400 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
         >
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="h-4 w-4" />
         </button>
       </div>
     </div>
@@ -155,60 +228,134 @@ function Pagination({ page, totalPages, onPageChange, totalItems, pageSize }) {
 }
 
 function SortIndicator({ sortOrder }) {
-  if (sortOrder === 'desc') {
-    return <ArrowDown className="w-3.5 h-3.5" />;
-  }
-  if (sortOrder === 'asc') {
-    return <ArrowUp className="w-3.5 h-3.5" />;
-  }
-  return <ArrowUpDown className="w-3.5 h-3.5" />;
+  if (sortOrder === 'desc') return <ArrowDown className="h-3.5 w-3.5" />;
+  if (sortOrder === 'asc') return <ArrowUp className="h-3.5 w-3.5" />;
+  return <ArrowUpDown className="h-3.5 w-3.5" />;
+}
+
+function formatPrice(value) {
+  if (value == null) return '-';
+  return `Rs ${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
 export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggleSort }) {
+  const safeStocks = Array.isArray(stocks) ? stocks : [];
   const [page, setPage] = useState(0);
   const [liveMap, setLiveMap] = useState({});
+  const [mateProMap, setMateProMap] = useState({});
+  const [loadingMatePro, setLoadingMatePro] = useState({});
 
-  if (!stocks || stocks.length === 0) {
-    return <p className="text-slate-400 text-sm">No stocks to display</p>;
-  }
-
-  const totalPages = Math.ceil(stocks.length / PAGE_SIZE);
-  const pageStocks = stocks.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(safeStocks.length / PAGE_SIZE));
+  const pageStocks = useMemo(
+    () => safeStocks.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [page, safeStocks]
+  );
 
   useEffect(() => {
     setPage(0);
-  }, [stocks]);
+  }, [runId, safeStocks.length]);
 
   useEffect(() => {
+    if (page < totalPages) return;
+    setPage(0);
+  }, [page, totalPages]);
+
+  useEffect(() => {
+    setLiveMap({});
+    setMateProMap({});
+    setLoadingMatePro({});
+  }, [runId]);
+
+  useEffect(() => {
+    if (!pageStocks.length) return undefined;
+
     let mounted = true;
 
     async function fetchQuotes() {
       try {
-        const syms = pageStocks.map(s => s.symbol);
-        if (!syms.length) return;
-        const res = await getQuotes(syms);
+        const symbols = pageStocks.map((stock) => stock.symbol);
+        const res = await getQuotes(symbols);
         const data = res.data || res;
-        const map = {};
-        syms.forEach(sym => {
-          const q = data[sym] || data[sym.toUpperCase()];
-          if (q) map[sym] = q;
+        const nextQuotes = {};
+
+        symbols.forEach((symbol) => {
+          const quote = data[symbol] || data[symbol.toUpperCase()];
+          if (quote) nextQuotes[symbol] = quote;
         });
-        if (mounted) setLiveMap(prev => ({ ...prev, ...map }));
-      } catch (e) {
-        console.error('Failed to fetch quotes', e);
+
+        if (mounted && Object.keys(nextQuotes).length > 0) {
+          setLiveMap((prev) => ({ ...prev, ...nextQuotes }));
+        }
+      } catch (error) {
+        console.error('Failed to fetch quotes', error);
       }
     }
 
-    // Initial fetch + periodic refresh
     fetchQuotes();
-    const iv = setInterval(fetchQuotes, 15000);
-    return () => { mounted = false; clearInterval(iv); };
-  }, [page, stocks]);
+    const intervalId = setInterval(fetchQuotes, 15000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
+  }, [pageStocks]);
+
+  useEffect(() => {
+    const missingSymbols = pageStocks
+      .filter((stock) => !stock.mate_pro && !mateProMap[stock.symbol] && !loadingMatePro[stock.symbol])
+      .map((stock) => stock.symbol);
+
+    if (!missingSymbols.length) return undefined;
+
+    let mounted = true;
+
+    setLoadingMatePro((prev) => ({
+      ...prev,
+      ...Object.fromEntries(missingSymbols.map((symbol) => [symbol, true])),
+    }));
+
+    async function hydrateMatePro() {
+      try {
+        const res = await getMateProBatch(missingSymbols, runId);
+        const hydrated = {};
+
+        (res.data?.stocks || []).forEach((entry) => {
+          hydrated[entry.symbol] = toMateProSummary(entry);
+        });
+
+        if (mounted && Object.keys(hydrated).length > 0) {
+          setMateProMap((prev) => ({ ...prev, ...hydrated }));
+        }
+      } catch (error) {
+        console.error('Failed to hydrate screener scores', error);
+      } finally {
+        if (mounted) {
+          setLoadingMatePro((prev) => {
+            const next = { ...prev };
+            missingSymbols.forEach((symbol) => {
+              delete next[symbol];
+            });
+            return next;
+          });
+        }
+      }
+    }
+
+    hydrateMatePro();
+
+    return () => {
+      mounted = false;
+    };
+  }, [loadingMatePro, mateProMap, pageStocks]);
+
+  if (!safeStocks.length) {
+    return <p className="text-sm text-slate-400">No stocks to display</p>;
+  }
 
   return (
     <div>
       <div className="mb-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-        <span>Showing the full 5-engine view for each screened stock.</span>
+        <span>Showing the full 5-engine view for each screened stock. Live quotes refresh every 15 seconds.</span>
         <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-400">
           Scroll sideways on smaller screens
         </span>
@@ -229,7 +376,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
                 <button
                   type="button"
                   onClick={onToggleSort}
-                  className="inline-flex items-center gap-1 text-slate-300 hover:text-white transition-colors"
+                  className="inline-flex items-center gap-1 text-slate-300 transition-colors hover:text-white"
                   title="Sort by composite score"
                 >
                   <span>Composite</span>
@@ -241,34 +388,38 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
             </tr>
           </thead>
           <tbody>
-            {pageStocks.map((s, i) => {
-              const mp = s.mate_pro;
-              const titan = mp?.model_scores?.TITAN ?? mp?.model_scores?.TITAN_v20;
-              const titanV19 = mp?.model_scores?.TITAN_v19;
-              const swingAi = mp?.model_scores?.Swing_AI;
-              const swingAiHyper = mp?.model_scores?.Swing_AI_Hyper;
-              const king = mp?.model_scores?.KING;
-              const composite = mp?.composite_score;
-              const titanMeta = mp?.titan_v20 || mp?.titan_v19;
+            {pageStocks.map((stock, index) => {
+              const matePro = stock.mate_pro || mateProMap[stock.symbol];
+              const isLoadingScores = !matePro && loadingMatePro[stock.symbol];
+              const titan = matePro?.model_scores?.TITAN ?? matePro?.model_scores?.TITAN_v20;
+              const titanV19 = matePro?.model_scores?.TITAN_v19;
+              const swingAi = matePro?.model_scores?.Swing_AI;
+              const swingAiHyper = matePro?.model_scores?.Swing_AI_Hyper;
+              const king = matePro?.model_scores?.KING;
+              const composite = matePro?.composite_score;
+              const titanMeta = matePro?.titan_v20 || matePro?.titan_v19;
+              const placeholder = isLoadingScores ? '...' : '-';
+              const liveQuote = liveMap[stock.symbol];
+              const displayPrice = liveQuote?.last_price ?? stock.cmp;
 
               return (
                 <tr
-                  key={s.symbol}
-                  className="border-b border-slate-800 hover:bg-slate-800/50 transition-colors cursor-pointer group"
+                  key={stock.symbol}
+                  className="group cursor-pointer border-b border-slate-800 transition-colors hover:bg-slate-800/50"
                 >
-                  <td className="px-3 py-3 align-top text-slate-500">{page * PAGE_SIZE + i + 1}</td>
+                  <td className="px-3 py-3 align-top text-slate-500">{page * PAGE_SIZE + index + 1}</td>
                   <td className="px-3 py-3 pr-4 align-top">
                     <Link
-                      to={`/stock/${s.symbol}${runId ? `?run_id=${runId}` : ''}`}
-                      className="text-blue-400 hover:text-blue-300 no-underline font-medium group-hover:underline"
+                      to={`/stock/${stock.symbol}${runId ? `?run_id=${runId}` : ''}`}
+                      className="font-medium text-blue-400 no-underline group-hover:underline hover:text-blue-300"
                     >
-                      {s.symbol}
+                      {stock.symbol}
                     </Link>
                     <TitanMeta meta={titanMeta} />
                     <TitanContextMeta meta={titanMeta} />
-                    {mp?.one_line_verdict && (
+                    {matePro?.one_line_verdict && (
                       <div
-                        className="mt-2 max-w-[300px] xl:max-w-[360px] text-[11px] leading-relaxed text-slate-400"
+                        className="mt-2 max-w-[300px] text-[11px] leading-relaxed text-slate-400 xl:max-w-[360px]"
                         style={{
                           display: '-webkit-box',
                           WebkitLineClamp: 4,
@@ -276,50 +427,51 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
                           overflow: 'hidden',
                         }}
                       >
-                        <span className="font-semibold text-slate-300">Verdict:</span> {mp.one_line_verdict}
+                        <span className="font-semibold text-slate-300">Verdict:</span> {matePro.one_line_verdict}
                       </div>
                     )}
                   </td>
-                  <td className="px-3 py-3 pr-4 align-top text-right font-mono text-slate-200 whitespace-nowrap">
-                    {(() => {
-                      const live = liveMap[s.symbol];
-                      const display = (live && live.last_price != null) ? live.last_price : s.cmp;
-                      if (display == null) return <span className="text-slate-600">—</span>;
-                      return `₹${display.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
-                    })()}
+                  <td className="whitespace-nowrap px-3 py-3 pr-4 text-right font-mono text-slate-200">
+                    {displayPrice == null ? <span className="text-slate-600">-</span> : formatPrice(displayPrice)}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {titan != null ? <ScoreBar label="T" score={titan} /> : <span className="text-slate-600 text-xs">—</span>}
+                    {titan != null ? <ScoreBar label="T" score={titan} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {titanV19 != null ? <ScoreBar label="T" score={titanV19} /> : <span className="text-slate-600 text-xs">—</span>}
+                    {titanV19 != null ? <ScoreBar label="T" score={titanV19} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {swingAi != null ? <ScoreBar label="S" score={swingAi} /> : <span className="text-slate-600 text-xs">—</span>}
+                    {swingAi != null ? <ScoreBar label="S" score={swingAi} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {swingAiHyper != null ? <ScoreBar label="S" score={swingAiHyper} /> : <span className="text-slate-600 text-xs">—</span>}
+                    {swingAiHyper != null ? <ScoreBar label="S" score={swingAiHyper} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-slate-600 text-xs">—</span>}
+                    {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
-                  <td className="px-2 py-3 align-top text-center whitespace-nowrap">
+                  <td className="whitespace-nowrap px-2 py-3 text-center">
                     {composite != null ? (
-                      <span className={`text-base font-bold font-mono ${
-                        composite >= 75 ? 'text-emerald-400' : composite >= 55 ? 'text-green-400' :
-                        composite >= 40 ? 'text-amber-400' : 'text-red-400'
+                      <span className={`font-mono text-base font-bold ${
+                        composite >= 75 ? 'text-emerald-400'
+                          : composite >= 55 ? 'text-green-400'
+                            : composite >= 40 ? 'text-amber-400'
+                              : 'text-red-400'
                       }`}>
                         {composite.toFixed(1)}
                       </span>
-                    ) : <span className="text-slate-600">—</span>}
+                    ) : (
+                      <span className="text-slate-600">{placeholder}</span>
+                    )}
                   </td>
-                  <td className="px-2 py-3 align-top text-center whitespace-nowrap">
-                    {mp?.consensus_verdict ? (
-                      <VerdictBadge verdict={mp.consensus_verdict} probability={mp.composite_probability} />
-                    ) : <span className="text-slate-600">—</span>}
+                  <td className="whitespace-nowrap px-2 py-3 text-center">
+                    {matePro?.consensus_verdict ? (
+                      <VerdictBadge verdict={matePro.consensus_verdict} probability={matePro.composite_probability} />
+                    ) : (
+                      <span className="text-slate-600">{isLoadingScores ? 'Loading' : '-'}</span>
+                    )}
                   </td>
-                  <td className="px-2 py-3 align-top text-center whitespace-nowrap">
-                    <ActionBadge action={mp?.action} />
+                  <td className="whitespace-nowrap px-2 py-3 text-center">
+                    <ActionBadge action={matePro?.action} />
                   </td>
                 </tr>
               );
@@ -328,12 +480,11 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
         </table>
       </div>
 
-      {/* Pagination */}
       <Pagination
         page={page}
         totalPages={totalPages}
         onPageChange={setPage}
-        totalItems={stocks.length}
+        totalItems={safeStocks.length}
         pageSize={PAGE_SIZE}
       />
     </div>

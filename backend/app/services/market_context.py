@@ -587,6 +587,20 @@ def get_delivery_context(db: Session, symbol: str) -> dict[str, Any]:
     return {"avg_pct": avg_pct, "trend": trend}
 
 
+def _default_index_context(label: str, symbol: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "symbol": symbol,
+        "weekly_rsi": None,
+        "structure": DATA_NOT_PROVIDED,
+        "trend_state": DATA_NOT_PROVIDED,
+        "mood": DATA_NOT_PROVIDED,
+        "perf_1m": None,
+        "perf_3m": None,
+        "perf_6m": None,
+    }
+
+
 def _classify_news_tone_from_titles(titles: list[str]) -> str:
     if not titles:
         return DATA_NOT_PROVIDED
@@ -754,9 +768,20 @@ def build_market_context(
     industry = profile.get("industry") or ""
 
     proxy = _sector_proxy_for(sector, industry)
-    sector_index = get_index_context(proxy["yahoo"], proxy["label"], proxy.get("tv"))
-    nifty = get_index_context("^NSEI", "Nifty 50", "NSE:NIFTY")
-    peers = get_sector_peers(symbol, sector) if sector else {"peers": [], "breakout_count": 0, "positive_count": 0, "avg_perf_1m": None}
+    if mode == "batch":
+        sector_cache_key = proxy.get("tv") or proxy["yahoo"]
+        nifty_cache_key = "NSE:NIFTY"
+        sector_index = _cache_get(_INDEX_CACHE, sector_cache_key) or _default_index_context(proxy["label"], proxy["yahoo"])
+        nifty = _cache_get(_INDEX_CACHE, nifty_cache_key) or _default_index_context("Nifty 50", "^NSEI")
+        peers = (
+            get_sector_peers(symbol, sector)
+            if sector and _cache_get(_SECTOR_PEER_CACHE, sector)
+            else {"peers": [], "breakout_count": 0, "positive_count": 0, "avg_perf_1m": None}
+        )
+    else:
+        sector_index = get_index_context(proxy["yahoo"], proxy["label"], proxy.get("tv"))
+        nifty = get_index_context("^NSEI", "Nifty 50", "NSE:NIFTY")
+        peers = get_sector_peers(symbol, sector) if sector else {"peers": [], "breakout_count": 0, "positive_count": 0, "avg_perf_1m": None}
     delivery = get_delivery_context(db, symbol)
 
     peer_breakouts = peers.get("breakout_count", 0)
@@ -790,7 +815,7 @@ def build_market_context(
 
     news_tone = DATA_NOT_PROVIDED
     news_titles: list[str] = []
-    if mode in {"full", "batch"}:
+    if mode == "full":
         query_name = profile.get("description") or profile.get("name") or symbol
         queries = build_news_queries(query_name, symbol)
         news = get_news_tone(queries[0], fallback_queries=queries[1:])
