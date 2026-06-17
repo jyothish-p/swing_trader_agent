@@ -1,17 +1,15 @@
 # Publish On Render
 
-This repo is now set up to run as a single Docker web service:
+This repo is now set up to run on Render as:
 
 - FastAPI serves the `/api/*` routes
 - FastAPI also serves the built React app in production
-- App data can live on a persistent disk at `/data`
+- A free Render Postgres database stores app data
 
 ## Before You Deploy
 
 1. Push this repo to GitHub, GitLab, or Bitbucket.
-2. Decide whether this is:
-   - A demo deployment: keep SQLite and the persistent disk.
-   - A long-term production deployment: consider moving `DATABASE_URL` to managed Postgres later so you can scale beyond one instance.
+2. Use the `main` branch, which already contains `render.yaml`.
 
 ## Recommended Render Setup
 
@@ -28,22 +26,14 @@ The Blueprint config does these things for you:
 - Builds from the repo `Dockerfile`
 - Runs the app in the `singapore` region
 - Health-checks ` /api/health`
-- Mounts a persistent disk at `/data`
+- Creates a free Render Postgres database
+- Connects the web app to that database with `DATABASE_URL`
 
-## Important Note About SQLite
+## Free Tier Notes
 
-This project uses SQLite by default. That works on Render only if you keep the persistent disk attached, because Render's normal filesystem is ephemeral.
-
-For the current app shape, SQLite is fine when:
-
-- You run one web instance
-- You mainly want a personal or small-team deployment
-
-You should plan a Postgres migration if you want:
-
-- Multiple app instances
-- Stronger database durability
-- Easier growth beyond a single machine
+- This Blueprint now targets Render free instances so it should not require a paid web service or persistent disk.
+- Render's free Postgres offering is time-limited. Render's docs say free Postgres databases expire 30 days after creation.
+- Free web services can spin down when idle, so the first request after inactivity can be slow.
 
 ## Optional Environment Variables
 
