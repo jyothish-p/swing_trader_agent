@@ -4,10 +4,14 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     volumes:
-      - ./backend/data:/app/backend/data  # Persist DB and cache
+      - ./backend/data:/data
     environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - SERVE_FRONTEND=1
+      - SWING_TRADER_DATA_DIR=/data
       - KITE_API_KEY=${KITE_API_KEY:-}
       - KITE_API_SECRET=${KITE_API_SECRET:-}
       - KITE_ACCESS_TOKEN=${KITE_ACCESS_TOKEN:-}

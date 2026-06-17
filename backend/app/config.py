@@ -2,6 +2,16 @@
 import os
 from pathlib import Path
 
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(name: str, default: str) -> list[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 # Use environment variable for data dir, or a safe default without spaces
@@ -48,10 +58,6 @@ KITE_API_SECRET = os.getenv("KITE_API_SECRET", "")
 KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN", "")
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
 # Optional OpenAI verdict generation
 LLM_VERDICTS_PROVIDER = os.getenv("LLM_VERDICTS_PROVIDER", "auto").strip().lower()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -65,9 +71,13 @@ OPENAI_VERDICTS_TIMEOUT_SEC = float(os.getenv("OPENAI_VERDICTS_TIMEOUT_SEC", "20
 OPENAI_VERDICTS_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_VERDICTS_MAX_OUTPUT_TOKENS", "90"))
 
 # Server
-HOST = "0.0.0.0"
-PORT = 8000
-CORS_ORIGINS = ["http://localhost:5174", "http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5174"]
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8000"))
+SERVE_FRONTEND = _env_flag("SERVE_FRONTEND", "1")
+CORS_ORIGINS = _csv_env(
+    "CORS_ORIGINS",
+    "http://localhost:5174,http://127.0.0.1:5174,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000",
+)
 
 # Cache TTL (seconds)
 CACHE_TTL_UNIVERSE = 86400  # 24 hours - F&O list doesn't change intraday

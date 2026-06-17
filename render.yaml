@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: swingtrader-nse
+    runtime: docker
+    plan: starter
+    region: singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 8000
+      - key: SERVE_FRONTEND
+        value: "1"
+      - key: SWING_TRADER_DATA_DIR
+        value: /data
+    disk:
+      name: swingtrader-data
+      mountPath: /data
+      sizeGB: 5
