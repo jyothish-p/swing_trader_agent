@@ -4,12 +4,13 @@ This repo is now set up to run on Render as:
 
 - FastAPI serves the `/api/*` routes
 - FastAPI also serves the built React app in production
-- A free Render Postgres database stores app data
+- An external Postgres database stores app data
 
 ## Before You Deploy
 
 1. Push this repo to GitHub, GitLab, or Bitbucket.
 2. Use the `main` branch, which already contains `render.yaml`.
+3. Create a Supabase project and copy its Postgres connection string.
 
 ## Recommended Render Setup
 
@@ -26,14 +27,21 @@ The Blueprint config does these things for you:
 - Builds from the repo `Dockerfile`
 - Runs the app in the `singapore` region
 - Health-checks ` /api/health`
-- Creates a free Render Postgres database
-- Connects the web app to that database with `DATABASE_URL`
+- Prompts you to set `DATABASE_URL` manually
+
+## Supabase Database Setup
+
+Use [SUPABASE_SETUP.md](./SUPABASE_SETUP.md) to create the database and get the connection string.
+
+At deploy time on Render, set:
+
+- `DATABASE_URL=<your Supabase Postgres connection string>`
 
 ## Free Tier Notes
 
-- This Blueprint now targets Render free instances so it should not require a paid web service or persistent disk.
-- Render's free Postgres offering is time-limited. Render's docs say free Postgres databases expire 30 days after creation.
-- Free web services can spin down when idle, so the first request after inactivity can be slow.
+- Render free web services can spin down when idle, so the first request after inactivity can be slow.
+- Supabase's current docs say Free Plan projects can be paused after 7 days of low activity.
+- This setup avoids Render's free-database expiration, but it is still not a guaranteed always-on production setup.
 
 ## Optional Environment Variables
 

@@ -1,8 +1,3 @@
-databases:
-  - name: swingtrader-db
-    plan: free
-    region: singapore
-
 services:
   - type: web
     name: swingtrader-nse
@@ -12,9 +7,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: swingtrader-db
-          property: connectionString
+        sync: false
       - key: HOST
         value: 0.0.0.0
       - key: PORT
