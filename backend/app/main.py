@@ -88,11 +88,7 @@ if SERVE_FRONTEND and FRONTEND_DIST_DIR.exists():
         _register_root_static_file(static_name)
 
 
-@app.get("/{full_path:path}", include_in_schema=False)
-async def serve_frontend(full_path: str):
-    if full_path.startswith("api/"):
-        raise HTTPException(status_code=404, detail="Not Found")
-
+def _serve_frontend_response(full_path: str = "") -> FileResponse:
     index_file = FRONTEND_DIST_DIR / "index.html"
     if not SERVE_FRONTEND or not index_file.exists():
         raise HTTPException(status_code=404, detail="Frontend build not found")
@@ -103,3 +99,16 @@ async def serve_frontend(full_path: str):
             return FileResponse(candidate)
 
     return FileResponse(index_file)
+
+
+@app.get("/", include_in_schema=False)
+async def serve_frontend_root():
+    return _serve_frontend_response()
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_frontend(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    return _serve_frontend_response(full_path)
