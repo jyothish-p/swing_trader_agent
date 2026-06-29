@@ -27,6 +27,7 @@ FRONTEND_DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 async def lifespan(app):
     """Startup and shutdown logic."""
     init_db()
+    screener.mark_interrupted_runs()
     logging.getLogger(__name__).info("Database initialized, app ready")
     yield
 

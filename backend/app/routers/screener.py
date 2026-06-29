@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
 from app.models import ScreeningResult, ScreenerRun
-from app.config import DATA_DIR
+from app.config import DATA_DIR, SCREENER_STALE_RUN_MINUTES
 from app.services.universe import get_filtered_universe
 from app.services.data_fetcher import bulk_download_historical
 from app.services.screener import run_screener, _to_python
@@ -26,7 +26,7 @@ router = APIRouter()
 RUN_JOBS: dict[str, dict] = {}
 RUNS_DIR = Path(DATA_DIR) / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
-STALE_RUN_TIMEOUT = timedelta(minutes=10)
+STALE_RUN_TIMEOUT = timedelta(minutes=SCREENER_STALE_RUN_MINUTES)
 
 
 def _run_snapshot_path(run_id: str) -> Path:
@@ -52,6 +52,83 @@ def _load_run_snapshot(run_id: str) -> dict | None:
     except Exception as exc:
         logger.warning("Failed to load run snapshot for %s: %s", run_id, exc)
         return None
+
+
+def _set_run_job(
+    run_id: str,
+    status: str,
+    message: str,
+    result: dict | None = None,
+    error: str | None = None,
+) -> None:
+    RUN_JOBS[run_id] = {
+        "status": status,
+        "message": message,
+        "result": result,
+        "error": error,
+    }
+
+
+def _update_run_message(run_id: str | None, message: str) -> None:
+    if not run_id:
+        return
+
+    job = RUN_JOBS.get(run_id) or {
+        "status": "running",
+        "result": None,
+        "error": None,
+    }
+    job["status"] = "running"
+    job["message"] = message
+    RUN_JOBS[run_id] = job
+
+
+def _fail_stale_runs(db: Session) -> None:
+    cutoff = datetime.utcnow() - STALE_RUN_TIMEOUT
+    stale_runs = db.query(ScreenerRun).filter(
+        ScreenerRun.status == "running",
+        ScreenerRun.started_at < cutoff,
+    ).all()
+
+    for run in stale_runs:
+        run.status = "failed"
+        run.completed_at = datetime.utcnow()
+        run.error_message = (
+            f"Run exceeded {SCREENER_STALE_RUN_MINUTES} minutes. "
+            "Please start a new screener run."
+        )
+        _set_run_job(run.run_id, "failed", "Failed", error=run.error_message)
+
+    if stale_runs:
+        db.commit()
+
+
+def _get_active_run(db: Session) -> ScreenerRun | None:
+    _fail_stale_runs(db)
+    return db.query(ScreenerRun).filter(
+        ScreenerRun.status == "running",
+    ).order_by(
+        ScreenerRun.started_at.desc(),
+    ).first()
+
+
+def mark_interrupted_runs() -> None:
+    """Clear running DB rows after a process restart or deploy."""
+    db = SessionLocal()
+    try:
+        running_runs = db.query(ScreenerRun).filter(ScreenerRun.status == "running").all()
+        for run in running_runs:
+            run.status = "failed"
+            run.completed_at = datetime.utcnow()
+            run.error_message = (
+                "Application restarted before this run finished. "
+                "Please start a new screener run."
+            )
+        if running_runs:
+            db.commit()
+            logger.info("Marked %s interrupted screener runs as failed", len(running_runs))
+    finally:
+        db.close()
 
 
 def _normalize_results_payload(payload: dict) -> dict:
@@ -228,12 +305,14 @@ async def _execute_screener_pipeline(
 ):
     """Run the full screener pipeline and return the dashboard payload."""
     # Step 1: Get universe
+    _update_run_message(run_id, "Fetching NSE universe...")
     logger.info("Step 1: Fetching F&O universe...")
     universe = await get_filtered_universe(db, force_refresh=force_refresh)
     symbols = [s["symbol"] for s in universe]
     logger.info(f"Universe: {len(symbols)} stocks")
 
     # Step 2: Download data
+    _update_run_message(run_id, f"Downloading price history for {len(symbols)} stocks...")
     logger.info("Step 2: Downloading historical data...")
     fetch_result = bulk_download_historical(
         symbols, db, full_refresh=force_refresh
@@ -245,10 +324,12 @@ async def _execute_screener_pipeline(
     )
 
     # Step 3-4: Run screener
+    _update_run_message(run_id, "Running screener reports...")
     logger.info("Step 3-4: Running screener...")
     screener_result = run_screener(db, symbols, run_id=run_id)
 
     # Step 5: Technical analysis for top stocks
+    _update_run_message(run_id, "Running technical analysis on top stocks...")
     logger.info("Step 5: Running technical analysis on top stocks...")
     top_symbols = [s["symbol"] for s in screener_result["top_stocks"]]
     ta_results = {}
@@ -277,6 +358,7 @@ async def _execute_screener_pipeline(
 
     all_analyzed_symbols = [m["symbol"] for m in screener_result.get("all_metrics", [])]
     mate_pro_symbols = all_analyzed_symbols if all_analyzed_symbols else top_symbols
+    _update_run_message(run_id, f"Running MATE-PRO scoring on {len(mate_pro_symbols)} stocks...")
     logger.info(f"Step 6: Running MATE-PRO on {len(mate_pro_symbols)} stocks...")
     mate_pro_results = run_mate_pro_batch(db, mate_pro_symbols, mode="batch", allow_llm_verdict=False)
     mate_pro_map = {r["symbol"]: r for r in mate_pro_results}
@@ -316,6 +398,7 @@ async def _execute_screener_pipeline(
         all_stocks.append(row)
 
     logger.info("Step 7: Extracting actionable stocks...")
+    _update_run_message(run_id, "Finalizing dashboard results...")
     actionable_stocks = extract_actionable(mate_pro_results, top_n=0)
 
     try:
@@ -377,20 +460,10 @@ async def _execute_screener_pipeline(
 def _run_screener_job(run_id: str, force_refresh: bool):
     db = SessionLocal()
     try:
-        RUN_JOBS[run_id] = {
-            "status": "running",
-            "message": "Fetching universe and price history...",
-            "result": None,
-            "error": None,
-        }
+        _set_run_job(run_id, "running", "Fetching universe and price history...")
         result = asyncio.run(_execute_screener_pipeline(db, force_refresh=force_refresh, run_id=run_id))
         _save_run_snapshot(run_id, result)
-        RUN_JOBS[run_id] = {
-            "status": "completed",
-            "message": "Completed",
-            "result": result,
-            "error": None,
-        }
+        _set_run_job(run_id, "completed", "Completed", result=result)
     except Exception as e:
         logger.error("Background screener run failed: %s", e, exc_info=True)
         db.rollback()
@@ -398,13 +471,9 @@ def _run_screener_job(run_id: str, force_refresh: bool):
         if run_record:
             run_record.status = "failed"
             run_record.completed_at = datetime.utcnow()
+            run_record.error_message = str(e)
             db.commit()
-        RUN_JOBS[run_id] = {
-            "status": "failed",
-            "message": "Failed",
-            "result": None,
-            "error": str(e),
-        }
+        _set_run_job(run_id, "failed", "Failed", error=str(e))
     finally:
         db.close()
 
@@ -434,9 +503,23 @@ async def start_screener_run(
     force_refresh: bool = Query(False, description="Force re-download all data"),
 ):
     """Start a screener run in the background and return immediately."""
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     db = SessionLocal()
     try:
+        active_run = _get_active_run(db)
+        if active_run:
+            _set_run_job(
+                active_run.run_id,
+                "running",
+                "A screener run is already in progress...",
+            )
+            return {
+                "status": "running",
+                "run_id": active_run.run_id,
+                "message": "A screener run is already in progress...",
+                "reused": True,
+            }
+
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_record = db.query(ScreenerRun).filter(ScreenerRun.run_id == run_id).first()
         if not run_record:
             db.add(ScreenerRun(
@@ -448,12 +531,7 @@ async def start_screener_run(
             db.commit()
     finally:
         db.close()
-    RUN_JOBS[run_id] = {
-        "status": "running",
-        "message": "Starting screener...",
-        "result": None,
-        "error": None,
-    }
+    _set_run_job(run_id, "running", "Starting screener...")
     Thread(target=_run_screener_job, args=(run_id, force_refresh), daemon=True).start()
     return {"status": "running", "run_id": run_id}
 
@@ -478,25 +556,18 @@ def get_run_status(run_id: str, db: Session = Depends(get_db)):
         return _status_payload(run_id, "completed", "Completed")
 
     if run_record.status == "failed":
-        RUN_JOBS[run_id] = {
-            "status": "failed",
-            "message": "Failed",
-            "result": None,
-            "error": run_record.error_message or "Run failed",
-        }
+        _set_run_job(run_id, "failed", "Failed", error=run_record.error_message or "Run failed")
         return _status_payload(run_id, "failed", "Failed", run_record.error_message or "Run failed")
 
     if run_record.started_at and datetime.utcnow() - run_record.started_at > STALE_RUN_TIMEOUT:
         run_record.status = "failed"
         run_record.completed_at = datetime.utcnow()
-        run_record.error_message = "Run stalled. Please start a new screener run."
+        run_record.error_message = (
+            f"Run exceeded {SCREENER_STALE_RUN_MINUTES} minutes. "
+            "Please start a new screener run."
+        )
         db.commit()
-        RUN_JOBS[run_id] = {
-            "status": "failed",
-            "message": "Failed",
-            "result": None,
-            "error": run_record.error_message,
-        }
+        _set_run_job(run_id, "failed", "Failed", error=run_record.error_message)
         return _status_payload(run_id, "failed", "Failed", run_record.error_message)
 
     return _status_payload(run_id, "running", "Running screener...")
@@ -569,6 +640,7 @@ def get_results(run_id: str, db: Session = Depends(get_db)):
 @router.get("/runs")
 def list_runs(limit: int = 10, db: Session = Depends(get_db)):
     """List recent screener runs."""
+    _fail_stale_runs(db)
     runs = db.query(ScreenerRun).order_by(
         ScreenerRun.started_at.desc()
     ).limit(limit).all()

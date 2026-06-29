@@ -14,3 +14,5 @@ services:
         value: 8000
       - key: SERVE_FRONTEND
         value: "1"
+      - key: SCREENER_STALE_RUN_MINUTES
+        value: "60"

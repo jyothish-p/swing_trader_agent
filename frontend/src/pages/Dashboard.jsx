@@ -8,7 +8,7 @@ const SORT_OPTIONS = {
   DESC: 'desc',
   ASC: 'asc',
 };
-const STALE_RUN_MS = 10 * 60 * 1000;
+const STALE_RUN_MS = 60 * 60 * 1000;
 const LIVE_REFRESH_MS = 60 * 1000;
 
 function normalizeScreenerResult(payload, fallbackRunId = null) {
@@ -221,6 +221,9 @@ export default function Dashboard() {
 
     try {
       const res = await runScreenerAsync(forceRefresh);
+      if (res.data.message) {
+        setStatus(res.data.message);
+      }
       setActiveRunId(res.data.run_id);
     } catch (e) {
       setError(e.response?.data?.detail || e.message || 'Screener failed');
