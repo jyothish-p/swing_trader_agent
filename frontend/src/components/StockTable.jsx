@@ -284,7 +284,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
               const swingAi = matePro?.model_scores?.Swing_AI;
               const swingAiHyper = matePro?.model_scores?.Swing_AI_Hyper;
               const king = matePro?.model_scores?.KING;
-              const composite = matePro?.composite_score;
+              const composite = matePro?.composite_score ?? stock.composite_score;
               const titanMeta = matePro?.titan_v20 || matePro?.titan_v19;
               const placeholder = '-';
               const liveQuote = liveMap[stock.symbol];
@@ -323,19 +323,19 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
                     {displayPrice == null ? <span className="text-slate-600">-</span> : formatPrice(displayPrice)}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {titan != null ? <ScoreBar label="T" score={titan} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
+                    {titan != null ? <ScoreBar label="T" score={titan} /> : <span className="text-xs text-slate-500">Pending</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {titanV19 != null ? <ScoreBar label="T" score={titanV19} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
+                    {titanV19 != null ? <ScoreBar label="T" score={titanV19} /> : <span className="text-xs text-slate-500">Pending</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {swingAi != null ? <ScoreBar label="S" score={swingAi} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
+                    {swingAi != null ? <ScoreBar label="S" score={swingAi} /> : <span className="text-xs text-slate-500">Pending</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {swingAiHyper != null ? <ScoreBar label="S" score={swingAiHyper} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
+                    {swingAiHyper != null ? <ScoreBar label="S" score={swingAiHyper} /> : <span className="text-xs text-slate-500">Pending</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
+                    {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-xs text-slate-500">Pending</span>}
                   </td>
                   <td className="whitespace-nowrap px-2 py-3 text-center">
                     {composite != null ? (

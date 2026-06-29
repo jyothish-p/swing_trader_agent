@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
-from app.models import ScreeningResult, ScreenerRun
+from app.models import ScreeningResult, ScreenerRun, ScreenerRunSnapshot
 from app.config import (
     DATA_DIR,
     MATE_PRO_MAX_SYMBOLS,
@@ -38,17 +38,45 @@ def _run_snapshot_path(run_id: str) -> Path:
     return RUNS_DIR / f"{run_id}.json"
 
 
-def _save_run_snapshot(run_id: str, result: dict) -> None:
+def _save_run_snapshot(run_id: str, result: dict, db: Session | None = None) -> None:
+    payload = _to_python(result)
     try:
         _run_snapshot_path(run_id).write_text(
-            json.dumps(_to_python(result), ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",
         )
     except Exception as exc:
         logger.warning("Failed to save run snapshot for %s: %s", run_id, exc)
 
+    if db is None:
+        return
 
-def _load_run_snapshot(run_id: str) -> dict | None:
+    try:
+        snapshot = db.query(ScreenerRunSnapshot).filter(ScreenerRunSnapshot.run_id == run_id).first()
+        if snapshot:
+            snapshot.payload = payload
+            snapshot.updated_at = datetime.utcnow()
+        else:
+            db.add(ScreenerRunSnapshot(
+                run_id=run_id,
+                payload=payload,
+                updated_at=datetime.utcnow(),
+            ))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Failed to save DB run snapshot for %s: %s", run_id, exc)
+
+
+def _load_run_snapshot(run_id: str, db: Session | None = None) -> dict | None:
+    if db is not None:
+        try:
+            snapshot = db.query(ScreenerRunSnapshot).filter(ScreenerRunSnapshot.run_id == run_id).first()
+            if snapshot:
+                return _to_python(snapshot.payload)
+        except Exception as exc:
+            logger.warning("Failed to load DB run snapshot for %s: %s", run_id, exc)
+
     path = _run_snapshot_path(run_id)
     if not path.exists():
         return None
@@ -223,7 +251,7 @@ def _ensure_complete_mate_pro_payload(db: Session, run_id: str, payload: dict) -
     if computed_results and not normalized.get("actionable_stocks"):
         normalized["actionable_stocks"] = extract_actionable(computed_results, top_n=0)
 
-    _save_run_snapshot(run_id, normalized)
+    _save_run_snapshot(run_id, normalized, db)
     return normalized
 
 
@@ -489,7 +517,7 @@ def _run_screener_job(run_id: str, force_refresh: bool):
     try:
         _set_run_job(run_id, "running", "Fetching universe and price history...")
         result = asyncio.run(_execute_screener_pipeline(db, force_refresh=force_refresh, run_id=run_id))
-        _save_run_snapshot(run_id, result)
+        _save_run_snapshot(run_id, result, db)
         _set_run_job(run_id, "completed", "Completed", result=result)
     except Exception as e:
         logger.error("Background screener run failed: %s", e, exc_info=True)
@@ -610,7 +638,7 @@ def get_results(run_id: str, db: Session = Depends(get_db)):
         normalized = _ensure_complete_mate_pro_payload(db, run_id, cached_job["result"])
         return _to_python(normalized)
 
-    snapshot = _load_run_snapshot(run_id)
+    snapshot = _load_run_snapshot(run_id, db)
     if snapshot:
         return _to_python(_ensure_complete_mate_pro_payload(db, run_id, snapshot))
 
@@ -660,7 +688,7 @@ def get_results(run_id: str, db: Session = Depends(get_db)):
         "actionable_stocks": [],
         "mate_pro_summary": None,
     })
-    _save_run_snapshot(run_id, payload)
+    _save_run_snapshot(run_id, payload, db)
     return _to_python(_ensure_complete_mate_pro_payload(db, run_id, payload))
 
 

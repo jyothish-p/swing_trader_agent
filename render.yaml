@@ -17,6 +17,6 @@ services:
       - key: SCREENER_STALE_RUN_MINUTES
         value: "60"
       - key: MATE_PRO_MAX_SYMBOLS
-        value: "40"
+        value: "0"
       - key: MATE_PRO_RESULT_HYDRATION_LIMIT
         value: "0"

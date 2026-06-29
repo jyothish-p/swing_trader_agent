@@ -197,6 +197,15 @@ class ScreenerRun(Base):
     error_message = Column(Text)
 
 
+class ScreenerRunSnapshot(Base):
+    """Persistent dashboard payload for a completed screener run."""
+    __tablename__ = "screener_run_snapshots"
+
+    run_id = Column(String(50), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class PortfolioEntry(Base):
     """Track stock purchases and their evolving MATE-PRO recommendations."""
     __tablename__ = "portfolio"
