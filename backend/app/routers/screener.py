@@ -167,7 +167,10 @@ def mark_interrupted_runs() -> None:
 def _normalize_results_payload(payload: dict) -> dict:
     """Return a consistent `/results/{run_id}` response shape."""
     if "stocks" in payload and "total" in payload:
-        return payload
+        return {
+            **payload,
+            "full_engine_complete": _payload_has_full_engine(payload),
+        }
 
     stocks = payload.get("all_stocks") or payload.get("top_stocks") or []
     return {
@@ -176,11 +179,23 @@ def _normalize_results_payload(payload: dict) -> dict:
         "stocks": stocks,
         "actionable_stocks": payload.get("actionable_stocks") or [],
         "mate_pro_summary": payload.get("mate_pro_summary"),
+        "full_engine_complete": _payload_has_full_engine(payload),
     }
 
 
 def _dedupe_symbols(symbols: list[str]) -> list[str]:
     return list(dict.fromkeys(str(symbol).upper() for symbol in symbols if symbol))
+
+
+def _payload_has_full_engine(payload: dict | None) -> bool:
+    if not payload:
+        return False
+
+    rows = payload.get("all_stocks") or payload.get("stocks") or payload.get("top_stocks") or []
+    if not rows:
+        return False
+
+    return all(bool((row.get("mate_pro") or {}).get("model_scores")) for row in rows)
 
 
 def _summarize_mate_pro_rows(rows: list[dict]) -> dict | None:
@@ -487,6 +502,7 @@ async def _execute_screener_pipeline(
     return _to_python({
         "status": "success",
         "run_id": screener_result["run_id"],
+        "full_engine_complete": len(mate_pro_map) == len(all_stocks),
         "universe_size": len(symbols),
         "data_fetch": {
             "fetched": len(fetch_result["success"]),
@@ -687,6 +703,7 @@ def get_results(run_id: str, db: Session = Depends(get_db)):
         "stocks": stocks,
         "actionable_stocks": [],
         "mate_pro_summary": None,
+        "full_engine_complete": False,
     })
     _save_run_snapshot(run_id, payload, db)
     return _to_python(_ensure_complete_mate_pro_payload(db, run_id, payload))
@@ -699,6 +716,13 @@ def list_runs(limit: int = 10, db: Session = Depends(get_db)):
     runs = db.query(ScreenerRun).order_by(
         ScreenerRun.started_at.desc()
     ).limit(limit).all()
+    run_ids = [run.run_id for run in runs]
+    snapshots = {
+        snapshot.run_id: snapshot.payload
+        for snapshot in db.query(ScreenerRunSnapshot).filter(
+            ScreenerRunSnapshot.run_id.in_(run_ids),
+        ).all()
+    } if run_ids else {}
 
     return {
         "runs": [
@@ -710,6 +734,7 @@ def list_runs(limit: int = 10, db: Session = Depends(get_db)):
                 "total_stocks": r.total_stocks,
                 "filtered_stocks": r.filtered_stocks,
                 "top_stocks": r.top_stocks,
+                "has_full_results": _payload_has_full_engine(snapshots.get(r.run_id)),
             }
             for r in runs
         ]

@@ -23,6 +23,7 @@ function normalizeScreenerResult(payload, fallbackRunId = null) {
     mate_pro_summary: payload?.mate_pro_summary || null,
     actionable_stocks: payload?.actionable_stocks || [],
     universe_size: payload?.universe_size || payload?.total || payload?.screening?.analyzed || allStocks.length,
+    full_engine_complete: payload?.full_engine_complete ?? allStocks.every((stock) => Boolean(stock?.mate_pro?.model_scores)),
   };
 }
 
@@ -87,6 +88,14 @@ export default function Dashboard() {
           try {
             const payload = data.result || (await getScreenerResults(activeRunId)).data;
             if (cancelled) return;
+            if (payload?.full_engine_complete === false) {
+              setError('This run only has base screener rows. Please run the screener again for full 5-engine results.');
+              setStatus('');
+              setLoading(false);
+              setActiveRunId(null);
+              loadRuns(false);
+              return;
+            }
             setResult(normalizeScreenerResult(payload, activeRunId));
             setError('');
             setStatus('');
@@ -143,7 +152,7 @@ export default function Dashboard() {
         if (cancelled) return;
 
         setRuns(latestRuns);
-        const latestCompleted = latestRuns.find((run) => run.status === 'completed');
+        const latestCompleted = latestRuns.find((run) => run.status === 'completed' && run.has_full_results);
         if (!latestCompleted) return;
         if (result?.run_id === latestCompleted.run_id) return;
 
@@ -184,7 +193,7 @@ export default function Dashboard() {
           return;
         }
 
-        const latest = latestRuns.find(r => r.status === 'completed');
+        const latest = latestRuns.find(r => r.status === 'completed' && r.has_full_results);
         if (latest) {
           await loadRunResults(latest.run_id);
         } else {
@@ -200,6 +209,13 @@ export default function Dashboard() {
   async function loadRunResults(runId) {
     try {
       const res = await getScreenerResults(runId);
+      if (res.data?.full_engine_complete === false) {
+        setError('This run does not contain full 5-engine results. Start a fresh screener run after the latest deploy.');
+        setLoading(false);
+        setStatus('');
+        setActiveRunId(null);
+        return;
+      }
       setResult(normalizeScreenerResult(res.data, runId));
       setError('');
       setStatus('');

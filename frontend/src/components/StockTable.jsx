@@ -323,19 +323,19 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
                     {displayPrice == null ? <span className="text-slate-600">-</span> : formatPrice(displayPrice)}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {titan != null ? <ScoreBar label="T" score={titan} /> : <span className="text-xs text-slate-500">Pending</span>}
+                    {titan != null ? <ScoreBar label="T" score={titan} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {titanV19 != null ? <ScoreBar label="T" score={titanV19} /> : <span className="text-xs text-slate-500">Pending</span>}
+                    {titanV19 != null ? <ScoreBar label="T" score={titanV19} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {swingAi != null ? <ScoreBar label="S" score={swingAi} /> : <span className="text-xs text-slate-500">Pending</span>}
+                    {swingAi != null ? <ScoreBar label="S" score={swingAi} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {swingAiHyper != null ? <ScoreBar label="S" score={swingAiHyper} /> : <span className="text-xs text-slate-500">Pending</span>}
+                    {swingAiHyper != null ? <ScoreBar label="S" score={swingAiHyper} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="px-2 py-3 align-top">
-                    {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-xs text-slate-500">Pending</span>}
+                    {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="whitespace-nowrap px-2 py-3 text-center">
                     {composite != null ? (
