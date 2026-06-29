@@ -13,7 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
 from app.models import ScreeningResult, ScreenerRun
-from app.config import DATA_DIR, SCREENER_STALE_RUN_MINUTES
+from app.config import (
+    DATA_DIR,
+    MATE_PRO_MAX_SYMBOLS,
+    MATE_PRO_RESULT_HYDRATION_LIMIT,
+    SCREENER_STALE_RUN_MINUTES,
+)
 from app.services.universe import get_filtered_universe
 from app.services.data_fetcher import bulk_download_historical
 from app.services.screener import run_screener, _to_python
@@ -146,6 +151,10 @@ def _normalize_results_payload(payload: dict) -> dict:
     }
 
 
+def _dedupe_symbols(symbols: list[str]) -> list[str]:
+    return list(dict.fromkeys(str(symbol).upper() for symbol in symbols if symbol))
+
+
 def _summarize_mate_pro_rows(rows: list[dict]) -> dict | None:
     verdicts = [
         (row.get("mate_pro") or {}).get("consensus_verdict")
@@ -179,8 +188,15 @@ def _ensure_complete_mate_pro_payload(db: Session, run_id: str, payload: dict) -
         for row in rows
         if row.get("symbol") and not _has_current_mate_pro(row)
     ]
+    if MATE_PRO_RESULT_HYDRATION_LIMIT > 0:
+        missing_symbols = missing_symbols[:MATE_PRO_RESULT_HYDRATION_LIMIT]
 
     if not missing_symbols:
+        normalized["mate_pro_summary"] = normalized.get("mate_pro_summary") or _summarize_mate_pro_rows(rows)
+        return normalized
+
+    if MATE_PRO_RESULT_HYDRATION_LIMIT <= 0:
+        logger.info("Skipping saved-result MATE-PRO hydration for %s; hydration limit is disabled", run_id)
         normalized["mate_pro_summary"] = normalized.get("mate_pro_summary") or _summarize_mate_pro_rows(rows)
         return normalized
 
@@ -357,9 +373,20 @@ async def _execute_screener_pipeline(
             stock["technical"] = ta_results[sym]
 
     all_analyzed_symbols = [m["symbol"] for m in screener_result.get("all_metrics", [])]
-    mate_pro_symbols = all_analyzed_symbols if all_analyzed_symbols else top_symbols
-    _update_run_message(run_id, f"Running MATE-PRO scoring on {len(mate_pro_symbols)} stocks...")
-    logger.info(f"Step 6: Running MATE-PRO on {len(mate_pro_symbols)} stocks...")
+    candidate_symbols = _dedupe_symbols(top_symbols + all_analyzed_symbols)
+    if MATE_PRO_MAX_SYMBOLS > 0:
+        mate_pro_symbols = candidate_symbols[:MATE_PRO_MAX_SYMBOLS]
+    else:
+        mate_pro_symbols = candidate_symbols
+    _update_run_message(
+        run_id,
+        f"Running MATE-PRO scoring on {len(mate_pro_symbols)} priority stocks...",
+    )
+    logger.info(
+        "Step 6: Running MATE-PRO on %s of %s candidate stocks",
+        len(mate_pro_symbols),
+        len(candidate_symbols),
+    )
     mate_pro_results = run_mate_pro_batch(db, mate_pro_symbols, mode="batch", allow_llm_verdict=False)
     mate_pro_map = {r["symbol"]: r for r in mate_pro_results}
 
