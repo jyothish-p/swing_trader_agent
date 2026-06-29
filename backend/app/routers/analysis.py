@@ -15,7 +15,7 @@ from app.models import TechnicalAnalysis, ScreeningResult
 from app.services.technical import run_full_analysis, analyze_stock
 from app.services.data_fetcher import get_stock_candles, bulk_download_historical
 from app.services.screener import _to_python
-from app.services.mate_pro import run_mate_pro_analysis, run_mate_pro_batch
+from app.services.mate_pro import MODEL_WEIGHTS, run_mate_pro_analysis, run_mate_pro_batch
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,7 +47,7 @@ def _snapshot_mate_pro_rows(snapshot: dict | None, symbols: list[str]) -> list[d
     for row in rows:
         symbol = str(row.get("symbol", "")).upper()
         mate_pro = row.get("mate_pro")
-        if symbol in wanted and mate_pro:
+        if symbol in wanted and mate_pro and mate_pro.get("model_weights") == MODEL_WEIGHTS:
             matches.append({"symbol": symbol, **mate_pro})
     return matches
 
@@ -70,6 +70,7 @@ def _mate_pro_snapshot_row(result: dict) -> dict:
         "agreement": result["composite"]["agreement"],
         "model_scores": result["composite"]["model_scores"],
         "model_verdicts": result["composite"]["model_verdicts"],
+        "model_weights": result["composite"].get("model_weights"),
         "action": result["trade_plans"]["scanner_plan"]["action"],
         "trigger": result["levels"]["trigger"],
         "stop_loss": result["levels"]["invalidation"],

@@ -43,6 +43,8 @@ LOOKBACK_DAYS = 365  # 1 year of historical data
 LOOKBACK_1M_DAYS = 22  # ~1 month trading days
 NEW_HIGH_TOLERANCE = 0.01  # 1% tolerance for new high detection
 HISTORICAL_DOWNLOAD_BATCH_SIZE = int(os.getenv("HISTORICAL_DOWNLOAD_BATCH_SIZE", "150"))
+MATE_PRO_BATCH_WORKERS = max(1, int(os.getenv("MATE_PRO_BATCH_WORKERS", "4")))
+MATE_PRO_BATCH_PRELOAD_PROFILES = _env_flag("MATE_PRO_BATCH_PRELOAD_PROFILES", "0")
 
 # Technical analysis timeframes
 EMA_PERIODS = [20, 50, 100, 200]

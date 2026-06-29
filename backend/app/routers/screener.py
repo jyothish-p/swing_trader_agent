@@ -18,7 +18,7 @@ from app.services.universe import get_filtered_universe
 from app.services.data_fetcher import bulk_download_historical
 from app.services.screener import run_screener, _to_python
 from app.services.technical import run_full_analysis
-from app.services.mate_pro import run_mate_pro_batch, extract_actionable
+from app.services.mate_pro import MODEL_WEIGHTS, run_mate_pro_batch, extract_actionable
 from app.services.live_data import get_live_quote
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,71 @@ def _normalize_results_payload(payload: dict) -> dict:
     }
 
 
+def _summarize_mate_pro_rows(rows: list[dict]) -> dict | None:
+    verdicts = [
+        (row.get("mate_pro") or {}).get("consensus_verdict")
+        for row in rows
+        if row.get("mate_pro")
+    ]
+    if not verdicts:
+        return None
+
+    return {
+        "total_analyzed": len(verdicts),
+        "strong_buy": len([v for v in verdicts if v == "STRONG BUY"]),
+        "buy": len([v for v in verdicts if v == "BUY"]),
+        "hold": len([v for v in verdicts if v == "HOLD"]),
+        "wait": len([v for v in verdicts if v == "WAIT"]),
+        "avoid": len([v for v in verdicts if v == "AVOID"]),
+    }
+
+
+def _has_current_mate_pro(row: dict) -> bool:
+    mate_pro = row.get("mate_pro") or {}
+    return bool(mate_pro) and mate_pro.get("model_weights") == MODEL_WEIGHTS
+
+
+def _ensure_complete_mate_pro_payload(db: Session, run_id: str, payload: dict) -> dict:
+    """Attach missing MATE-PRO rows before the dashboard receives results."""
+    normalized = _normalize_results_payload(payload)
+    rows = normalized.get("stocks") or []
+    missing_symbols = [
+        str(row.get("symbol", "")).upper()
+        for row in rows
+        if row.get("symbol") and not _has_current_mate_pro(row)
+    ]
+
+    if not missing_symbols:
+        normalized["mate_pro_summary"] = normalized.get("mate_pro_summary") or _summarize_mate_pro_rows(rows)
+        return normalized
+
+    logger.info(
+        "Hydrating %s missing MATE-PRO rows before returning dashboard results for %s",
+        len(missing_symbols),
+        run_id,
+    )
+    computed_results = run_mate_pro_batch(db, missing_symbols, mode="batch", allow_llm_verdict=False)
+    computed_map = {result["symbol"]: result for result in computed_results}
+
+    for row in rows:
+        symbol = str(row.get("symbol", "")).upper()
+        result = computed_map.get(symbol)
+        if result:
+            row["mate_pro"] = _mp_summary(result)
+            row.pop("mate_pro_error", None)
+        elif symbol in missing_symbols:
+            row["mate_pro_error"] = "MATE-PRO unavailable for this symbol"
+
+    normalized["stocks"] = rows
+    normalized["total"] = len(rows)
+    normalized["mate_pro_summary"] = _summarize_mate_pro_rows(rows)
+    if computed_results and not normalized.get("actionable_stocks"):
+        normalized["actionable_stocks"] = extract_actionable(computed_results, top_n=0)
+
+    _save_run_snapshot(run_id, normalized)
+    return normalized
+
+
 def _mp_summary(mp: dict) -> dict:
     titan = (mp.get("models") or {}).get("titan") or {}
     titan_v19 = (mp.get("models") or {}).get("titan_v19") or {}
@@ -81,6 +146,7 @@ def _mp_summary(mp: dict) -> dict:
         "agreement": mp["composite"]["agreement"],
         "model_scores": mp["composite"]["model_scores"],
         "model_verdicts": mp["composite"]["model_verdicts"],
+        "model_weights": mp["composite"].get("model_weights"),
         "action": mp["trade_plans"]["scanner_plan"]["action"],
         "trigger": mp["levels"]["trigger"],
         "stop_loss": mp["levels"]["invalidation"],
@@ -397,6 +463,11 @@ def get_run_status(run_id: str, db: Session = Depends(get_db)):
     """Get background run status and final result when available."""
     job = RUN_JOBS.get(run_id)
     if job:
+        if job.get("status") == "completed" and job.get("result"):
+            job = {
+                **job,
+                "result": _ensure_complete_mate_pro_payload(db, run_id, job["result"]),
+            }
         return _to_python(job)
 
     run_record = db.query(ScreenerRun).filter(ScreenerRun.run_id == run_id).first()
@@ -438,12 +509,12 @@ def get_results(run_id: str, db: Session = Depends(get_db)):
     if cached_job and cached_job.get("status") == "running":
         raise HTTPException(status_code=409, detail="Run still in progress. Please retry in a few seconds.")
     if cached_job and cached_job.get("status") == "completed" and cached_job.get("result"):
-        normalized = _normalize_results_payload(cached_job["result"])
+        normalized = _ensure_complete_mate_pro_payload(db, run_id, cached_job["result"])
         return _to_python(normalized)
 
     snapshot = _load_run_snapshot(run_id)
     if snapshot:
-        return _to_python(_normalize_results_payload(snapshot))
+        return _to_python(_ensure_complete_mate_pro_payload(db, run_id, snapshot))
 
     run_record = db.query(ScreenerRun).filter(ScreenerRun.run_id == run_id).first()
     if run_record and run_record.status == "running":
@@ -492,7 +563,7 @@ def get_results(run_id: str, db: Session = Depends(get_db)):
         "mate_pro_summary": None,
     })
     _save_run_snapshot(run_id, payload)
-    return _normalize_results_payload(payload)
+    return _to_python(_ensure_complete_mate_pro_payload(db, run_id, payload))
 
 
 @router.get("/runs")

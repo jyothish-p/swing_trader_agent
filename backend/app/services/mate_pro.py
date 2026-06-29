@@ -11,17 +11,23 @@ applies its own scoring formula to produce scores, verdicts, and trade plans.
 import logging
 import numpy as np
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from app.models import DailyCandle, Stock
 from app.services.llm_verdict import generate_llm_one_line_verdict
-from app.services.market_context import build_market_context, preload_stock_profiles, preload_news_tones
+from app.services.market_context import (
+    build_market_context,
+    preload_delivery_contexts,
+    preload_news_tones,
+    preload_stock_profiles,
+)
 from app.services.technical import (
     _calc_ema, _calc_sma, _calc_rsi, _calc_bollinger, _calc_macd,
     _calc_vwap, _calc_fibonacci_levels, _calc_gann_levels,
     _calc_volume_profile, _detect_golden_death_cross,
 )
-from app.config import NSE_SUFFIX
+from app.config import MATE_PRO_BATCH_PRELOAD_PROFILES, MATE_PRO_BATCH_WORKERS, NSE_SUFFIX
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +68,8 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
         DailyCandle.date >= datetime.now().date() - timedelta(days=400),
     ).order_by(DailyCandle.date).all()
 
-    if not candles or len(candles) < 50:
+    min_candles = 10 if mode == "batch" else 50
+    if not candles or len(candles) < min_candles:
         return None
 
     df = pd.DataFrame([{
@@ -545,11 +552,11 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
 
 
 MODEL_WEIGHTS = {
-    "TITAN": 0.60,
-    "TITAN_v19": 0.10,
-    "Swing_AI": 0.10,
-    "Swing_AI_Hyper": 0.10,
-    "KING": 0.10,
+    "TITAN": 0.20,
+    "TITAN_v19": 0.20,
+    "Swing_AI": 0.20,
+    "Swing_AI_Hyper": 0.20,
+    "KING": 0.20,
 }
 
 
@@ -2548,16 +2555,48 @@ def run_mate_pro_batch(
 ) -> list[dict]:
     """Run MATE-PRO analysis on a batch of symbols. Returns sorted list."""
     results = []
-    preload_stock_profiles(db, symbols)
+    symbols = [symbol.upper() for symbol in symbols if symbol]
+    if MATE_PRO_BATCH_PRELOAD_PROFILES:
+        preload_stock_profiles(db, symbols)
+    preload_delivery_contexts(db, symbols)
     if mode == "full":
         preload_news_tones(db, symbols)
-    for sym in symbols:
-        try:
-            result = run_mate_pro_analysis(db, sym, mode=mode, allow_llm_verdict=allow_llm_verdict)
-            if result:
-                results.append(result)
-        except Exception as e:
-            logger.error(f"MATE-PRO failed for {sym}: {e}")
+
+    worker_count = min(MATE_PRO_BATCH_WORKERS, len(symbols))
+    if worker_count <= 1:
+        for sym in symbols:
+            try:
+                result = run_mate_pro_analysis(db, sym, mode=mode, allow_llm_verdict=allow_llm_verdict)
+                if result:
+                    results.append(result)
+            except Exception as e:
+                logger.error(f"MATE-PRO failed for {sym}: {e}")
+    else:
+        from app.database import SessionLocal
+
+        def _run_symbol(sym: str) -> dict | None:
+            worker_db = SessionLocal()
+            try:
+                return run_mate_pro_analysis(
+                    worker_db,
+                    sym,
+                    mode=mode,
+                    allow_llm_verdict=allow_llm_verdict,
+                )
+            finally:
+                worker_db.close()
+
+        logger.info("Running MATE-PRO batch with %s workers for %s symbols", worker_count, len(symbols))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {executor.submit(_run_symbol, sym): sym for sym in symbols}
+            for future in as_completed(future_map):
+                sym = future_map[future]
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logger.error(f"MATE-PRO failed for {sym}: {e}")
 
     # Sort by composite score descending
     results.sort(key=lambda x: x["composite"]["composite_score"], reverse=True)

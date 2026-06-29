@@ -1,68 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getMateProBatch, getQuotes } from '../lib/api';
+import { getQuotes } from '../lib/api';
 
 const PAGE_SIZE = 20;
-
-function toMateProSummary(result) {
-  if (result?.model_scores && !result?.models) {
-    return result;
-  }
-
-  const titan = result?.models?.titan || {};
-  const titanV19 = result?.models?.titan_v19 || {};
-  const composite = result?.composite || {};
-  const scannerPlan = result?.trade_plans?.scanner_plan || {};
-  const context = result?.context || {};
-  const metrics = result?.metrics || {};
-
-  return {
-    composite_score: composite.composite_score,
-    composite_probability: composite.composite_probability,
-    consensus_verdict: composite.consensus_verdict,
-    one_line_verdict: result?.one_line_verdict,
-    one_line_verdict_source: result?.one_line_verdict_source,
-    agreement: composite.agreement,
-    model_scores: composite.model_scores,
-    model_verdicts: composite.model_verdicts,
-    action: scannerPlan.action,
-    trigger: result?.levels?.trigger,
-    stop_loss: result?.levels?.invalidation,
-    sl_pct: metrics.sl_pct,
-    targets: scannerPlan.targets,
-    rr_t2: scannerPlan.rr_t2,
-    pattern: context.pattern,
-    phase: context.phase,
-    titan_v20: {
-      model: titan.model,
-      liquidity_gate: titan.liquidity_gate,
-      selection_grade: titan.selection_grade,
-      selection_action: titan.selection_action,
-      setup_family: titan.setup_family,
-      base_weekly_score: titan.base_weekly_score,
-      sector_momentum_score: titan.sector_context?.sector_momentum_score,
-      sector_index: titan.sector_context?.sector_index,
-      sector_weekly_rsi: titan.sector_context?.sector_weekly_rsi,
-      sector_structure: titan.sector_context?.sector_structure,
-      sector_perf_1m: titan.sector_context?.sector_perf_1m,
-      sector_perf_3m: titan.sector_context?.sector_perf_3m,
-      sector_positive_peers: titan.sector_context?.sector_positive_peers,
-      sector_peer_avg_perf_1m: titan.sector_context?.sector_peer_avg_perf_1m,
-      news_tone: titan.sentiment_filter?.news_tone,
-      market_mood: titan.sentiment_filter?.nifty_mood,
-      retail_psych: titan.sentiment_filter?.retail_psych,
-      sentiment_score: titan.sentiment_filter?.sentiment_score,
-    },
-    titan_v19: {
-      model: titanV19.model,
-      liquidity_gate: titanV19.liquidity_gate,
-      selection_grade: titanV19.selection_grade,
-      selection_action: titanV19.selection_action,
-      setup_family: titanV19.setup_family,
-    },
-  };
-}
 
 function VerdictBadge({ verdict, probability }) {
   const colors = {
@@ -242,8 +183,6 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
   const safeStocks = Array.isArray(stocks) ? stocks : [];
   const [page, setPage] = useState(0);
   const [liveMap, setLiveMap] = useState({});
-  const [mateProMap, setMateProMap] = useState({});
-  const [loadingMatePro, setLoadingMatePro] = useState({});
 
   const totalPages = Math.max(1, Math.ceil(safeStocks.length / PAGE_SIZE));
   const pageStocks = useMemo(
@@ -262,8 +201,6 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
 
   useEffect(() => {
     setLiveMap({});
-    setMateProMap({});
-    setLoadingMatePro({});
   }, [runId]);
 
   useEffect(() => {
@@ -299,54 +236,6 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
       clearInterval(intervalId);
     };
   }, [pageStocks]);
-
-  useEffect(() => {
-    const missingSymbols = pageStocks
-      .filter((stock) => !stock.mate_pro && !mateProMap[stock.symbol] && !loadingMatePro[stock.symbol])
-      .map((stock) => stock.symbol);
-
-    if (!missingSymbols.length) return undefined;
-
-    let mounted = true;
-
-    setLoadingMatePro((prev) => ({
-      ...prev,
-      ...Object.fromEntries(missingSymbols.map((symbol) => [symbol, true])),
-    }));
-
-    async function hydrateMatePro() {
-      try {
-        const res = await getMateProBatch(missingSymbols, runId);
-        const hydrated = {};
-
-        (res.data?.stocks || []).forEach((entry) => {
-          hydrated[entry.symbol] = toMateProSummary(entry);
-        });
-
-        if (mounted && Object.keys(hydrated).length > 0) {
-          setMateProMap((prev) => ({ ...prev, ...hydrated }));
-        }
-      } catch (error) {
-        console.error('Failed to hydrate screener scores', error);
-      } finally {
-        if (mounted) {
-          setLoadingMatePro((prev) => {
-            const next = { ...prev };
-            missingSymbols.forEach((symbol) => {
-              delete next[symbol];
-            });
-            return next;
-          });
-        }
-      }
-    }
-
-    hydrateMatePro();
-
-    return () => {
-      mounted = false;
-    };
-  }, [loadingMatePro, mateProMap, pageStocks]);
 
   if (!safeStocks.length) {
     return <p className="text-sm text-slate-400">No stocks to display</p>;
@@ -389,8 +278,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
           </thead>
           <tbody>
             {pageStocks.map((stock, index) => {
-              const matePro = stock.mate_pro || mateProMap[stock.symbol];
-              const isLoadingScores = !matePro && loadingMatePro[stock.symbol];
+              const matePro = stock.mate_pro;
               const titan = matePro?.model_scores?.TITAN ?? matePro?.model_scores?.TITAN_v20;
               const titanV19 = matePro?.model_scores?.TITAN_v19;
               const swingAi = matePro?.model_scores?.Swing_AI;
@@ -398,7 +286,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
               const king = matePro?.model_scores?.KING;
               const composite = matePro?.composite_score;
               const titanMeta = matePro?.titan_v20 || matePro?.titan_v19;
-              const placeholder = isLoadingScores ? '...' : '-';
+              const placeholder = '-';
               const liveQuote = liveMap[stock.symbol];
               const displayPrice = liveQuote?.last_price ?? stock.cmp;
 
@@ -467,7 +355,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
                     {matePro?.consensus_verdict ? (
                       <VerdictBadge verdict={matePro.consensus_verdict} probability={matePro.composite_probability} />
                     ) : (
-                      <span className="text-slate-600">{isLoadingScores ? 'Loading' : '-'}</span>
+                      <span className="text-slate-600">-</span>
                     )}
                   </td>
                   <td className="whitespace-nowrap px-2 py-3 text-center">

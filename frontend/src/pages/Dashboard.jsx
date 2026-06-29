@@ -283,7 +283,7 @@ export default function Dashboard() {
         <div className="max-w-3xl">
           <h1 className="text-2xl font-bold text-white">Swing Trading Dashboard</h1>
           <p className="text-sm text-slate-400 mt-1">
-            Top NSE stocks scored by TITAN v20 (60%), TITAN v19 (10%), Swing AI v12.2 (10%), Swing AI v12.1 (10%) & KING v16 (10%)
+            Top NSE stocks scored equally by TITAN v20, TITAN v19, Swing AI v12.2, Swing AI v12.1 & KING v16 (20% each)
           </p>
           <p className="mt-2 text-xs text-slate-500">
             We now show all 5 engine scores side by side, so the tables scroll horizontally on smaller screens instead of cramping the data.

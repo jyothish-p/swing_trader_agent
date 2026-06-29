@@ -44,11 +44,13 @@ _PROFILE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _SECTOR_PEER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _INDEX_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _NEWS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_DELIVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 _PROFILE_TTL = 60 * 30
 _SECTOR_TTL = 60 * 30
 _INDEX_TTL = 60 * 20
 _NEWS_TTL = 60 * 45
+_DELIVERY_TTL = 60 * 20
 
 DATA_NOT_PROVIDED = "DATA NOT PROVIDED"
 
@@ -350,16 +352,17 @@ def preload_stock_profiles(db: Session, symbols: list[str], chunk_size: int = 60
             db.rollback()
 
 
-def get_stock_profile(db: Session, symbol: str) -> dict[str, Any]:
+def get_stock_profile(db: Session, symbol: str, allow_fetch: bool = True) -> dict[str, Any]:
     symbol = symbol.upper()
     cached = _cache_get(_PROFILE_CACHE, symbol)
     if cached:
         return cached
 
-    preload_stock_profiles(db, [symbol], chunk_size=1)
-    cached = _cache_get(_PROFILE_CACHE, symbol)
-    if cached:
-        return cached
+    if allow_fetch:
+        preload_stock_profiles(db, [symbol], chunk_size=1)
+        cached = _cache_get(_PROFILE_CACHE, symbol)
+        if cached:
+            return cached
 
     stock = db.query(Stock).filter(Stock.symbol == symbol).first()
     profile = {
@@ -560,10 +563,22 @@ def get_sector_peers(symbol: str, sector: str, limit: int = 3) -> dict[str, Any]
 
 
 def get_delivery_context(db: Session, symbol: str) -> dict[str, Any]:
+    symbol = symbol.upper()
+    cached = _cache_get(_DELIVERY_CACHE, symbol)
+    if cached:
+        return cached
+
     rows = db.query(DeliveryData).filter(
-        DeliveryData.symbol == symbol.upper()
+        DeliveryData.symbol == symbol
     ).order_by(DeliveryData.date.desc()).limit(10).all()
 
+    if not rows:
+        return _cache_set(_DELIVERY_CACHE, symbol, {"avg_pct": None, "trend": DATA_NOT_PROVIDED}, _DELIVERY_TTL)
+
+    return _cache_set(_DELIVERY_CACHE, symbol, _compute_delivery_context(rows), _DELIVERY_TTL)
+
+
+def _compute_delivery_context(rows: list[DeliveryData]) -> dict[str, Any]:
     if not rows:
         return {"avg_pct": None, "trend": DATA_NOT_PROVIDED}
 
@@ -585,6 +600,32 @@ def get_delivery_context(db: Session, symbol: str) -> dict[str, Any]:
     else:
         trend = "stable"
     return {"avg_pct": avg_pct, "trend": trend}
+
+
+def preload_delivery_contexts(db: Session, symbols: list[str]) -> None:
+    missing = [
+        symbol.upper()
+        for symbol in symbols
+        if symbol and not _cache_get(_DELIVERY_CACHE, symbol.upper())
+    ]
+    if not missing:
+        return
+
+    cutoff = datetime.now().date() - timedelta(days=45)
+    rows = db.query(DeliveryData).filter(
+        DeliveryData.symbol.in_(missing),
+        DeliveryData.date >= cutoff,
+    ).order_by(DeliveryData.symbol, DeliveryData.date.desc()).all()
+
+    grouped: dict[str, list[DeliveryData]] = {symbol: [] for symbol in missing}
+    for row in rows:
+        bucket = grouped.get(row.symbol)
+        if bucket is not None and len(bucket) < 10:
+            bucket.append(row)
+
+    for symbol in missing:
+        context = _compute_delivery_context(grouped.get(symbol, []))
+        _cache_set(_DELIVERY_CACHE, symbol, context, _DELIVERY_TTL)
 
 
 def _default_index_context(label: str, symbol: str) -> dict[str, Any]:
@@ -763,7 +804,7 @@ def build_market_context(
     mode: str = "full",
 ) -> dict[str, Any]:
     symbol = symbol.upper()
-    profile = get_stock_profile(db, symbol)
+    profile = get_stock_profile(db, symbol, allow_fetch=mode != "batch")
     sector = profile.get("sector") or ""
     industry = profile.get("industry") or ""
 

@@ -12,6 +12,7 @@ Reports:
 import logging
 import pandas as pd
 import numpy as np
+from collections import defaultdict
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -265,12 +266,26 @@ def run_screener(db: Session, symbols: list[str], run_id: str | None = None) -> 
 
     # Step 1: Compute metrics for all stocks
     logger.info(f"Computing metrics for {len(symbols)} stocks...")
+    cutoff_date = date.today() - timedelta(days=400)
+    symbol_set = set(symbols)
+    market_caps = dict(
+        db.query(Stock.symbol, Stock.market_cap_cr)
+        .filter(Stock.symbol.in_(symbols))
+        .all()
+    )
+    candles_by_symbol: dict[str, list[DailyCandle]] = defaultdict(list)
+    candle_rows = db.query(DailyCandle).filter(
+        DailyCandle.symbol.in_(symbols),
+        DailyCandle.date >= cutoff_date,
+    ).order_by(DailyCandle.symbol, DailyCandle.date).all()
+
+    for candle in candle_rows:
+        if candle.symbol in symbol_set:
+            candles_by_symbol[candle.symbol].append(candle)
+
     all_metrics = []
     for sym in symbols:
-        candles = db.query(DailyCandle).filter(
-            DailyCandle.symbol == sym,
-            DailyCandle.date >= date.today() - timedelta(days=400)
-        ).order_by(DailyCandle.date).all()
+        candles = candles_by_symbol.get(sym, [])
 
         if not candles or len(candles) < 10:
             continue
@@ -282,10 +297,7 @@ def run_screener(db: Session, symbols: list[str], run_id: str | None = None) -> 
 
         metrics = _compute_stock_metrics(sym, df)
         if metrics:
-            # Get market cap from Stock table
-            stock = db.query(Stock).filter(Stock.symbol == sym).first()
-            if stock:
-                metrics["market_cap_cr"] = stock.market_cap_cr
+            metrics["market_cap_cr"] = market_caps.get(sym, 0)
             all_metrics.append(metrics)
 
     logger.info(f"Computed metrics for {len(all_metrics)} stocks")
@@ -312,6 +324,7 @@ def run_screener(db: Session, symbols: list[str], run_id: str | None = None) -> 
             appearance_count[sym]["count"] += 1
 
     # Step 4: Compute composite scores and save results
+    result_rows = []
     for metrics in all_metrics:
         sym = metrics["symbol"]
         app = appearance_count.get(sym, {"reports": [], "count": 0})
@@ -329,7 +342,7 @@ def run_screener(db: Session, symbols: list[str], run_id: str | None = None) -> 
         metrics.update(report_flags)
         metrics["composite_score"] = composite
 
-        result = ScreeningResult(
+        result_rows.append(ScreeningResult(
             run_id=run_id,
             symbol=sym,
             cmp=metrics["cmp"],
@@ -353,10 +366,11 @@ def run_screener(db: Session, symbols: list[str], run_id: str | None = None) -> 
             market_cap_cr=metrics.get("market_cap_cr", 0),
             composite_score=composite,
             **report_flags,
-        )
-        db.add(result)
+        ))
 
-    db.commit()
+    if result_rows:
+        db.bulk_save_objects(result_rows)
+        db.commit()
 
     # Step 5: Get top N
     top_results = db.query(ScreeningResult).filter(

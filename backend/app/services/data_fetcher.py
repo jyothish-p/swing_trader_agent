@@ -31,6 +31,16 @@ def _get_last_date_in_db(db: Session, symbol: str) -> date | None:
     return result
 
 
+def _get_last_dates_map(db: Session, symbols: list[str]) -> dict[str, date]:
+    rows = db.query(
+        DailyCandle.symbol,
+        func.max(DailyCandle.date),
+    ).filter(
+        DailyCandle.symbol.in_(symbols),
+    ).group_by(DailyCandle.symbol).all()
+    return {symbol: latest_date for symbol, latest_date in rows if latest_date}
+
+
 def _get_existing_dates_map(
     db: Session,
     symbols: list[str],
@@ -76,13 +86,14 @@ def bulk_download_historical(
     today = date.today()
     start_date = today - timedelta(days=LOOKBACK_DAYS)
 
+    last_dates = {} if full_refresh else _get_last_dates_map(db, symbols)
     symbols_to_fetch: dict[str, date] = {}
     for sym in symbols:
         if full_refresh:
             symbols_to_fetch[sym] = start_date
             continue
 
-        last_date = _get_last_date_in_db(db, sym)
+        last_date = last_dates.get(sym)
         if last_date and last_date >= today - timedelta(days=1):
             result["skipped"].append(sym)
         elif last_date:
