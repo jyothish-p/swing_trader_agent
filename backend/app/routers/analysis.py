@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 from app.config import DATA_DIR
 from app.database import get_db
-from app.models import TechnicalAnalysis, ScreeningResult
+from app.models import TechnicalAnalysis, ScreeningResult, ScreenerRunSnapshot
 from app.services.technical import run_full_analysis, analyze_stock
 from app.services.data_fetcher import get_stock_candles, bulk_download_historical
 from app.services.screener import _to_python
@@ -22,7 +22,17 @@ router = APIRouter()
 RUNS_DIR = Path(DATA_DIR) / "runs"
 
 
-def _load_run_snapshot(run_id: str) -> dict | None:
+def _load_run_snapshot(run_id: str, db: Session | None = None) -> dict | None:
+    if db is not None:
+        try:
+            snapshot = db.query(ScreenerRunSnapshot).filter(
+                ScreenerRunSnapshot.run_id == run_id
+            ).first()
+            if snapshot:
+                return _to_python(snapshot.payload)
+        except Exception as exc:
+            logger.warning("Failed to load DB run snapshot for %s in analysis router: %s", run_id, exc)
+
     path = RUNS_DIR / f"{run_id}.json"
     if not path.exists():
         return None
@@ -33,9 +43,186 @@ def _load_run_snapshot(run_id: str) -> dict | None:
         return None
 
 
-def _save_run_snapshot(run_id: str, payload: dict) -> None:
+def _save_run_snapshot(run_id: str, payload: dict, db: Session | None = None) -> None:
+    payload = _to_python(payload)
+    if db is not None:
+        try:
+            snapshot = db.query(ScreenerRunSnapshot).filter(
+                ScreenerRunSnapshot.run_id == run_id
+            ).first()
+            if snapshot:
+                snapshot.payload = payload
+            else:
+                db.add(ScreenerRunSnapshot(run_id=run_id, payload=payload))
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.warning("Failed to save DB run snapshot for %s in analysis router: %s", run_id, exc)
+
     path = RUNS_DIR / f"{run_id}.json"
-    path.write_text(json.dumps(_to_python(payload), ensure_ascii=False), encoding="utf-8")
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _snapshot_stock_row(snapshot: dict | None, symbol: str) -> dict | None:
+    if not snapshot:
+        return None
+    target = symbol.upper()
+    rows = snapshot.get("stocks") or snapshot.get("all_stocks") or snapshot.get("top_stocks") or []
+    for row in rows:
+        if str(row.get("symbol", "")).upper() == target:
+            return row
+    return None
+
+
+def _snapshot_mate_pro(snapshot: dict | None, symbol: str) -> dict | None:
+    row = _snapshot_stock_row(snapshot, symbol)
+    mate_pro = (row or {}).get("mate_pro")
+    if mate_pro and mate_pro.get("model_weights") == MODEL_WEIGHTS:
+        return mate_pro
+    return None
+
+
+def _snapshot_model(name: str, score: float | None, verdict: str | None) -> dict:
+    return {
+        "model": name,
+        "scanner_score": score,
+        "selection_total": score,
+        "probability_pct": score,
+        "final_probability": score,
+        "verdict": verdict,
+        "components": {},
+        "penalties": 0,
+        "penalty_reasons": [],
+    }
+
+
+def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
+    scores = mate_pro.get("model_scores") or {}
+    verdicts = mate_pro.get("model_verdicts") or {}
+    trigger = mate_pro.get("trigger")
+    stop_loss = mate_pro.get("stop_loss")
+    targets = mate_pro.get("targets") or {}
+    action = mate_pro.get("action")
+
+    return _to_python({
+        "symbol": symbol,
+        "cmp": None,
+        "timestamp": None,
+        "one_line_verdict": mate_pro.get("one_line_verdict"),
+        "one_line_verdict_source": mate_pro.get("one_line_verdict_source"),
+        "context": {
+            "daily_structure": None,
+            "weekly_structure": None,
+            "phase": mate_pro.get("phase"),
+            "pattern": mate_pro.get("pattern"),
+            "volatility_state": None,
+            "sector_momentum_score": (mate_pro.get("titan_v20") or {}).get("sector_momentum_score"),
+            "sector_index": (mate_pro.get("titan_v20") or {}).get("sector_index"),
+            "sector_weekly_rsi": (mate_pro.get("titan_v20") or {}).get("sector_weekly_rsi"),
+            "sector_structure": (mate_pro.get("titan_v20") or {}).get("sector_structure"),
+            "sector_positive_peers": (mate_pro.get("titan_v20") or {}).get("sector_positive_peers"),
+            "sector_perf_1m": (mate_pro.get("titan_v20") or {}).get("sector_perf_1m"),
+            "sector_perf_3m": (mate_pro.get("titan_v20") or {}).get("sector_perf_3m"),
+        },
+        "metrics": {
+            "ema_stack": None,
+            "rsi": None,
+            "macd_crossover": None,
+            "vol_ratio": None,
+            "sl_pct": mate_pro.get("sl_pct"),
+        },
+        "levels": {
+            "supports": [],
+            "resistances": [],
+            "trigger": trigger,
+            "invalidation": stop_loss,
+        },
+        "trade_plans": {
+            "scanner_plan": {
+                "entry_breakout": trigger,
+                "entry_retest_zone": [],
+                "stop_loss": stop_loss,
+                "sl_pct": mate_pro.get("sl_pct"),
+                "targets": targets,
+                "rr_t2": mate_pro.get("rr_t2"),
+                "action": action,
+            },
+            "positional_plan": {
+                "entry_zone": [],
+                "stop_loss": stop_loss,
+                "sl_pct": mate_pro.get("sl_pct"),
+                "targets": {},
+                "hold_rule": None,
+            },
+        },
+        "composite": {
+            "composite_score": mate_pro.get("composite_score"),
+            "composite_probability": mate_pro.get("composite_probability"),
+            "consensus_verdict": mate_pro.get("consensus_verdict"),
+            "agreement": mate_pro.get("agreement"),
+            "model_scores": scores,
+            "model_verdicts": verdicts,
+            "model_weights": mate_pro.get("model_weights"),
+        },
+        "models": {
+            "titan": _snapshot_model("TITAN v20", scores.get("TITAN") or scores.get("TITAN_v20"), verdicts.get("TITAN") or verdicts.get("TITAN_v20")),
+            "titan_v19": _snapshot_model("TITAN v19", scores.get("TITAN_v19"), verdicts.get("TITAN_v19")),
+            "swing_ai_v12_2": _snapshot_model("Swing AI v12.2", scores.get("Swing_AI"), verdicts.get("Swing_AI")),
+            "swing_ai_v12_1": _snapshot_model("Swing AI v12.1", scores.get("Swing_AI_Hyper"), verdicts.get("Swing_AI_Hyper")),
+            "king": _snapshot_model("KING v16", scores.get("KING"), verdicts.get("KING")),
+        },
+        "snapshot_source": "screener_run",
+    })
+
+
+def _apply_snapshot_mate_pro(result: dict, mate_pro: dict) -> dict:
+    """Keep the detail page verdict exactly aligned with the selected dashboard run."""
+    result = _to_python(result)
+    snapshot_result = _mate_pro_from_snapshot(result.get("symbol", ""), mate_pro)
+
+    result["one_line_verdict"] = snapshot_result["one_line_verdict"] or result.get("one_line_verdict")
+    result["one_line_verdict_source"] = snapshot_result["one_line_verdict_source"] or result.get("one_line_verdict_source")
+    result["snapshot_source"] = "screener_run"
+
+    result.setdefault("composite", {}).update(snapshot_result["composite"])
+    result.setdefault("trade_plans", {}).setdefault("scanner_plan", {}).update(
+        snapshot_result["trade_plans"]["scanner_plan"]
+    )
+    result.setdefault("levels", {}).update({
+        key: value
+        for key, value in snapshot_result["levels"].items()
+        if value not in (None, [], {})
+    })
+    result.setdefault("metrics", {}).update({
+        key: value
+        for key, value in snapshot_result["metrics"].items()
+        if value is not None
+    })
+
+    model_key_map = {
+        "titan": ("TITAN", "TITAN_v20"),
+        "titan_v19": ("TITAN_v19",),
+        "swing_ai_v12_2": ("Swing_AI",),
+        "swing_ai_v12_1": ("Swing_AI_Hyper",),
+        "king": ("KING",),
+    }
+    scores = mate_pro.get("model_scores") or {}
+    verdicts = mate_pro.get("model_verdicts") or {}
+    for model_key, summary_keys in model_key_map.items():
+        model = (result.get("models") or {}).get(model_key)
+        if not model:
+            continue
+        summary_key = next((key for key in summary_keys if key in scores or key in verdicts), None)
+        if summary_key is None:
+            continue
+        model["verdict"] = verdicts.get(summary_key, model.get("verdict"))
+        score = scores.get(summary_key)
+        if score is not None:
+            model["scanner_score"] = score
+            model["selection_total"] = score
+
+    return _to_python(result)
 
 
 def _snapshot_mate_pro_rows(snapshot: dict | None, symbols: list[str]) -> list[dict]:
@@ -165,7 +352,7 @@ def _summarize_snapshot(snapshot: dict) -> None:
 
 
 def _repair_run_snapshot(db: Session, run_id: str, computed_results: list[dict]) -> None:
-    snapshot = _load_run_snapshot(run_id) or _build_base_snapshot(db, run_id)
+    snapshot = _load_run_snapshot(run_id, db) or _build_base_snapshot(db, run_id)
     rows = snapshot.get("stocks") or snapshot.get("all_stocks") or snapshot.get("top_stocks") or []
     by_symbol = {str(row.get("symbol", "")).upper(): row for row in rows}
 
@@ -184,7 +371,7 @@ def _repair_run_snapshot(db: Session, run_id: str, computed_results: list[dict])
     snapshot["total"] = len(rows)
     snapshot["stocks"] = rows
     _summarize_snapshot(snapshot)
-    _save_run_snapshot(run_id, snapshot)
+    _save_run_snapshot(run_id, snapshot, db)
 
 
 # ── MATE-PRO endpoints (must be BEFORE /{symbol} catch-all) ──
@@ -206,7 +393,7 @@ def run_mate_pro_batch_analysis(
             ).order_by(ScreeningResult.composite_score.desc()).limit(20).all()
             symbols = [r.symbol for r in results]
 
-        snapshot_results = _snapshot_mate_pro_rows(_load_run_snapshot(run_id), symbols)
+        snapshot_results = _snapshot_mate_pro_rows(_load_run_snapshot(run_id, db), symbols)
 
     if not symbols:
         raise HTTPException(status_code=400, detail="Provide symbols or run_id")
@@ -319,10 +506,12 @@ def lookup_stock(
 @router.get("/{symbol}/mate-pro")
 def get_mate_pro_analysis(
     symbol: str,
+    run_id: str = Query(None, description="Screener run ID. If supplied, align verdict with that dashboard run."),
     db: Session = Depends(get_db),
 ):
     """Run all 3 MATE-PRO models on a stock."""
     symbol = symbol.upper()
+    snapshot_mate_pro = _snapshot_mate_pro(_load_run_snapshot(run_id, db), symbol) if run_id else None
 
     # Auto-download data if missing
     df = get_stock_candles(db, symbol, days=365)
@@ -332,7 +521,12 @@ def get_mate_pro_analysis(
 
     result = run_mate_pro_analysis(db, symbol, allow_llm_verdict=True)
     if not result:
+        if snapshot_mate_pro:
+            return _mate_pro_from_snapshot(symbol, snapshot_mate_pro)
         raise HTTPException(status_code=404, detail=f"Insufficient data for MATE-PRO analysis of {symbol}")
+
+    if snapshot_mate_pro:
+        return _apply_snapshot_mate_pro(result, snapshot_mate_pro)
     return result
 
 

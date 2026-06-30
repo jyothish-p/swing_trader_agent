@@ -23,7 +23,7 @@ export default function StockDetail() {
 
   useEffect(() => {
     loadData();
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, runId]);
 
   async function loadData() {
     setLoading(true);
@@ -39,7 +39,7 @@ export default function StockDetail() {
 
       // Fetch MATE-PRO separately so we can see errors
       try {
-        const mateProRes = await getMatePro(symbol);
+        const mateProRes = await getMatePro(symbol, runId);
         console.log('MATE-PRO response:', mateProRes.data);
         if (mateProRes?.data) setMatePro(mateProRes.data);
       } catch (mpErr) {

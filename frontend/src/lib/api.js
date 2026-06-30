@@ -35,8 +35,8 @@ export const getAnalysis = (symbol, runId = null) =>
 export const getChartData = (symbol, timeframe = 'daily', days = 180) =>
   api.get(`/analysis/${symbol}/chart-data?timeframe=${timeframe}&days=${days}`);
 
-export const getMatePro = (symbol) =>
-  api.get(`/analysis/${symbol}/mate-pro`);
+export const getMatePro = (symbol, runId = null) =>
+  api.get(`/analysis/${symbol}/mate-pro${runId ? `?run_id=${runId}` : ''}`);
 
 export const getMateProBatch = (symbols = [], runId = null) =>
   api.post(`/analysis/mate-pro/batch${runId ? `?run_id=${runId}` : ''}`, symbols);
