@@ -46,3 +46,4 @@ On startup, the app automatically creates its database tables with SQLAlchemy, s
 - Supabase's current docs say Free Plan projects can be paused after 7 days of low activity.
 - Supabase's current pricing page says Free Plan projects are paused after 1 week of inactivity.
 - If the project is paused, you can restore it from the Supabase dashboard.
+- If Supabase Security Advisor reports `RLS Disabled in Public`, run the matching SQL fix from this repo. For `public.evaluations`, use `supabase_security_fix.sql` in the Supabase SQL Editor, then click `Refresh` in Security Advisor.
