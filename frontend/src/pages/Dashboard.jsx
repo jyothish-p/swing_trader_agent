@@ -10,6 +10,7 @@ const SORT_OPTIONS = {
 };
 const STALE_RUN_MS = 60 * 60 * 1000;
 const LIVE_REFRESH_MS = 60 * 1000;
+const LATEST_DASHBOARD_RUN_KEY = 'swingTraderLatestDashboardRunId';
 
 function normalizeScreenerResult(payload, fallbackRunId = null) {
   const allStocks = payload?.all_stocks || payload?.stocks || payload?.top_stocks || [];
@@ -71,6 +72,12 @@ export default function Dashboard() {
   useEffect(() => {
     loadRuns(true);
   }, []);
+
+  useEffect(() => {
+    if (result?.run_id) {
+      window.localStorage.setItem(LATEST_DASHBOARD_RUN_KEY, result.run_id);
+    }
+  }, [result?.run_id]);
 
   useEffect(() => {
     if (!activeRunId) return undefined;

@@ -8,10 +8,14 @@ import {
 import SignalBadge from '../components/SignalBadge';
 import { getAnalysis, getChartData, getPriceHistory, getMatePro } from '../lib/api';
 
+const LATEST_DASHBOARD_RUN_KEY = 'swingTraderLatestDashboardRunId';
+
 export default function StockDetail() {
   const { symbol } = useParams();
   const [searchParams] = useSearchParams();
   const runId = searchParams.get('run_id');
+  const savedRunId = window.localStorage.getItem(LATEST_DASHBOARD_RUN_KEY);
+  const effectiveRunId = runId || savedRunId;
 
   const [timeframe, setTimeframe] = useState('daily');
   const [analysis, setAnalysis] = useState(null);
@@ -22,25 +26,32 @@ export default function StockDetail() {
   const [activeTab, setActiveTab] = useState('mate-pro');
 
   useEffect(() => {
-    loadData();
-  }, [symbol, timeframe, runId]);
+    let cancelled = false;
+    loadData(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, timeframe, effectiveRunId]);
 
-  async function loadData() {
+  async function loadData(isCancelled = () => false) {
     setLoading(true);
+    setMatePro(null);
     try {
       const [analysisRes, chartRes, historyRes] = await Promise.all([
-        getAnalysis(symbol, runId).catch(() => null),
+        getAnalysis(symbol, effectiveRunId).catch(() => null),
         getChartData(symbol, timeframe, 180).catch(() => null),
         getPriceHistory(symbol, 30).catch(() => null),
       ]);
+      if (isCancelled()) return;
       if (analysisRes) setAnalysis(analysisRes.data);
       if (chartRes) setChartData(chartRes.data);
       if (historyRes) setPriceHistory(historyRes.data);
 
       // Fetch MATE-PRO separately so we can see errors
       try {
-        const mateProRes = await getMatePro(symbol, runId);
+        const mateProRes = await getMatePro(symbol, effectiveRunId);
         console.log('MATE-PRO response:', mateProRes.data);
+        if (isCancelled()) return;
         if (mateProRes?.data) setMatePro(mateProRes.data);
       } catch (mpErr) {
         console.error('MATE-PRO error:', mpErr.response?.status, mpErr.response?.data, mpErr.message);
@@ -48,6 +59,7 @@ export default function StockDetail() {
     } catch (e) {
       console.error(e);
     }
+    if (isCancelled()) return;
     setLoading(false);
   }
 

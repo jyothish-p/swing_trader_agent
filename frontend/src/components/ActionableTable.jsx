@@ -172,6 +172,8 @@ function ActionRow({ s, index, runId }) {
   const swingAiHyper = mp.model_scores?.Swing_AI_Hyper;
   const king = mp.model_scores?.KING;
   const composite = mp.composite_score ?? s.composite_score;
+  const verdict = mp.consensus_verdict ?? s.verdict;
+  const probability = mp.composite_probability ?? s.probability;
   const isBuy = s.action_type === 'BUY';
   const titanMeta = mp.titan_v20 || mp.titan_v19;
 
@@ -230,7 +232,7 @@ function ActionRow({ s, index, runId }) {
         ) : <span className="text-slate-600">—</span>}
       </td>
       <td className="px-2 py-3 align-top text-center whitespace-nowrap">
-        <VerdictBadge verdict={s.verdict} probability={s.probability} />
+        <VerdictBadge verdict={verdict} probability={probability} />
       </td>
       <td className="px-2 py-3 align-top text-center whitespace-nowrap">
         <SignalBadge type={s.action_type} />
