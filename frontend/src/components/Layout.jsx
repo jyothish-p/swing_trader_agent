@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import {
   Bell,
@@ -10,12 +11,26 @@ import {
   Settings,
   SlidersHorizontal,
   Star,
+  Sun,
   TrendingUp,
 } from 'lucide-react';
 
+const THEME_STORAGE_KEY = 'swingTraderTheme';
+
 export default function Layout() {
   const location = useLocation();
+  const [theme, setTheme] = useState(() => window.localStorage.getItem(THEME_STORAGE_KEY) || 'dark');
   const isActive = (path) => location.pathname === path;
+  const isLight = theme === 'light';
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((current) => (current === 'light' ? 'dark' : 'light'));
+  };
 
   const navLink = (to, label, Icon, exact = false) => {
     const active = exact ? isActive(to) : location.pathname.startsWith(to);
@@ -34,7 +49,7 @@ export default function Layout() {
   };
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[#030816] text-slate-100">
+    <div className={`theme-${theme} min-h-screen overflow-hidden bg-[#030816] text-slate-100`}>
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.18),transparent_34%),radial-gradient(circle_at_top_right,rgba(99,102,241,0.22),transparent_30%),linear-gradient(180deg,#030816_0%,#071225_48%,#020617_100%)]" />
       <div className="relative flex min-h-screen">
         <aside className="hidden w-[264px] shrink-0 border-r border-white/8 bg-slate-950/50 p-4 backdrop-blur-2xl lg:block">
@@ -82,8 +97,14 @@ export default function Layout() {
                   <span className="text-sm">Search stocks, sectors...</span>
                   <Search className="ml-auto h-4 w-4" />
                 </div>
-                <button className="rounded-xl border border-white/10 bg-slate-950/40 p-2.5 text-slate-300 hover:text-white">
-                  <Moon className="h-5 w-5" />
+                <button
+                  type="button"
+                  onClick={toggleTheme}
+                  className="rounded-xl border border-white/10 bg-slate-950/40 p-2.5 text-slate-300 hover:text-white"
+                  aria-label={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
+                  title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
+                >
+                  {isLight ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
                 </button>
                 <button className="relative rounded-xl border border-white/10 bg-slate-950/40 p-2.5 text-slate-300 hover:text-white">
                   <Bell className="h-5 w-5" />
