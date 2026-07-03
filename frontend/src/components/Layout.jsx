@@ -8,7 +8,6 @@ import {
   Moon,
   Search,
   Settings,
-  ShieldAlert,
   SlidersHorizontal,
   Star,
   TrendingUp,
@@ -68,18 +67,6 @@ export default function Layout() {
             </span>
           </nav>
 
-          <div className="mt-12 rounded-3xl border border-white/8 bg-gradient-to-br from-slate-800/80 to-indigo-950/70 p-5 shadow-2xl">
-            <div className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-indigo-500/20 text-cyan-300">
-              <ShieldAlert className="h-8 w-8" />
-            </div>
-            <div className="text-center text-lg font-bold text-white">Upgrade to Pro</div>
-            <p className="mt-2 text-center text-sm leading-relaxed text-slate-400">
-              Unlock advanced filters, alerts and backtesting.
-            </p>
-            <button className="mt-5 w-full rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-[0_12px_35px_rgba(79,70,229,0.35)]">
-              Upgrade Now
-            </button>
-          </div>
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
