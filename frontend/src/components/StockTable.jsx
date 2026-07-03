@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Crown } from 'lucide-react';
 import { getQuotes } from '../lib/api';
 
 const PAGE_SIZE = 20;
@@ -37,8 +37,8 @@ function ScoreBar({ label, score, max = 100, color }) {
   return (
     <div className="flex min-w-[96px] items-center gap-1.5 sm:min-w-[112px]">
       <span className="w-4 text-right text-[10px] font-medium text-slate-400">{label}</span>
-      <div className="h-2 w-14 overflow-hidden rounded-full bg-slate-700 sm:w-20">
-        <div className={`h-full rounded-full ${color || barColor}`} style={{ width: `${pct}%` }} />
+      <div className="h-2 w-14 overflow-hidden rounded-full bg-slate-800 ring-1 ring-white/5 sm:w-20">
+        <div className={`h-full rounded-full ${color || barColor} shadow-[0_0_14px_rgba(52,211,153,0.45)]`} style={{ width: `${pct}%` }} />
       </div>
       <span className="w-6 text-right font-mono text-[11px] text-slate-300">{score}</span>
     </div>
@@ -179,6 +179,20 @@ function formatPrice(value) {
   return `Rs ${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
+function RankCell({ rank }) {
+  const tones = [
+    'text-yellow-300 drop-shadow-[0_0_12px_rgba(250,204,21,0.55)]',
+    'text-slate-300',
+    'text-orange-300 drop-shadow-[0_0_12px_rgba(251,146,60,0.45)]',
+  ];
+
+  if (rank <= 3) {
+    return <Crown className={`h-6 w-6 ${tones[rank - 1]}`} />;
+  }
+
+  return <span className="font-mono text-sm text-slate-500">{rank}</span>;
+}
+
 export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggleSort }) {
   const safeStocks = Array.isArray(stocks) ? stocks : [];
   const [page, setPage] = useState(0);
@@ -245,15 +259,15 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
     <div>
       <div className="mb-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
         <span>Showing the full 5-engine view for each screened stock. Live quotes refresh every 15 seconds.</span>
-        <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-400">
+        <span className="rounded-full border border-sky-400/20 bg-sky-500/5 px-3 py-1 text-[11px] text-sky-300">
           Scroll sideways on smaller screens
         </span>
       </div>
-      <div className="overflow-x-auto rounded-lg border border-slate-700/70">
+      <div className="overflow-x-auto rounded-2xl border border-white/10 bg-[#081225]/80 shadow-inner shadow-black/30">
         <table className="w-full min-w-[1080px] text-sm">
           <thead>
-            <tr className="border-b border-slate-700 bg-slate-900/40 text-left text-[11px] uppercase tracking-wide text-slate-400">
-              <th className="px-3 py-3 pr-2">#</th>
+            <tr className="border-b border-white/10 bg-slate-950/70 text-left text-[11px] uppercase tracking-wide text-slate-300">
+              <th className="px-3 py-4 pr-2">Rank</th>
               <th className="px-3 py-3 pr-4">Stock</th>
               <th className="px-3 py-3 pr-4 text-right">CMP</th>
               <th className="px-2 py-3 text-center">TITAN v20</th>
@@ -290,19 +304,24 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
               const liveQuote = liveMap[stock.symbol];
               const displayPrice = liveQuote?.last_price ?? stock.cmp;
 
+              const rank = page * PAGE_SIZE + index + 1;
+
               return (
                 <tr
                   key={stock.symbol}
-                  className="group cursor-pointer border-b border-slate-800 transition-colors hover:bg-slate-800/50"
+                  className="group cursor-pointer border-b border-white/8 transition-all hover:bg-sky-500/5"
                 >
-                  <td className="px-3 py-3 align-top text-slate-500">{page * PAGE_SIZE + index + 1}</td>
+                  <td className="px-3 py-4 align-top text-center">
+                    <RankCell rank={rank} />
+                  </td>
                   <td className="px-3 py-3 pr-4 align-top">
                     <Link
                       to={`/stock/${stock.symbol}${runId ? `?run_id=${runId}` : ''}`}
-                      className="font-medium text-blue-400 no-underline group-hover:underline hover:text-blue-300"
+                      className="font-bold text-blue-400 no-underline group-hover:underline hover:text-blue-300"
                     >
                       {stock.symbol}
                     </Link>
+                    <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">NSE</div>
                     <TitanMeta meta={titanMeta} />
                     <TitanContextMeta meta={titanMeta} />
                     {matePro?.one_line_verdict && (

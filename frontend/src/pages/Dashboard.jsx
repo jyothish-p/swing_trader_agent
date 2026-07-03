@@ -1,5 +1,19 @@
 ﻿import { useState, useEffect, useMemo } from 'react';
-import { Play, RefreshCw, Clock, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import {
+  Activity,
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  Eye,
+  Hourglass,
+  Loader2,
+  Play,
+  RefreshCw,
+  Shield,
+  Target,
+  ThumbsUp,
+  TrendingUp,
+} from 'lucide-react';
 import StockTable from '../components/StockTable';
 import ActionableTable from '../components/ActionableTable';
 import { runScreenerAsync, getScreenerRuns, getScreenerResults, getScreenerStatus } from '../lib/api';
@@ -50,6 +64,31 @@ function sortByComposite(stocks, direction) {
 
 function toggleSortOrder(direction) {
   return direction === SORT_OPTIONS.DESC ? SORT_OPTIONS.ASC : SORT_OPTIONS.DESC;
+}
+
+function MetricCard({ icon: Icon, value, label, tone = 'blue', active = false, onClick }) {
+  const tones = {
+    blue: 'from-sky-500/20 to-blue-950/40 border-sky-500/35 text-sky-300 shadow-sky-500/10',
+    green: 'from-emerald-500/20 to-emerald-950/35 border-emerald-500/35 text-emerald-300 shadow-emerald-500/10',
+    purple: 'from-violet-500/25 to-violet-950/35 border-violet-500/40 text-violet-300 shadow-violet-500/10',
+    amber: 'from-amber-500/18 to-orange-950/35 border-amber-500/35 text-amber-300 shadow-amber-500/10',
+    cyan: 'from-cyan-500/18 to-teal-950/35 border-cyan-500/35 text-cyan-300 shadow-cyan-500/10',
+    red: 'from-rose-500/20 to-red-950/35 border-rose-500/35 text-rose-300 shadow-rose-500/10',
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group min-h-[148px] rounded-2xl border bg-gradient-to-br p-4 text-center shadow-2xl transition-all ${
+        tones[tone] || tones.blue
+      } ${active ? 'scale-[1.025] ring-2 ring-white/20' : 'hover:-translate-y-0.5 hover:border-white/25'} ${onClick ? 'cursor-pointer' : 'cursor-default'}`}
+    >
+      <Icon className="mx-auto mb-4 h-8 w-8 opacity-95 transition-transform group-hover:scale-110" />
+      <div className="text-3xl font-black tracking-tight text-white">{value}</div>
+      <div className="mt-1 text-sm font-medium text-slate-300">{label}</div>
+    </button>
+  );
 }
 
 export default function Dashboard() {
@@ -305,140 +344,100 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="max-w-3xl">
-          <h1 className="text-2xl font-bold text-white">Swing Trading Dashboard</h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Top NSE stocks scored equally by TITAN v20, TITAN v19, Swing AI v12.2, Swing AI v12.1 & KING v16 (20% each)
-          </p>
-          <p className="mt-2 text-xs text-slate-500">
-            We now show all 5 engine scores side by side, so the tables scroll horizontally on smaller screens instead of cramping the data.
-          </p>
+      <section className="rounded-[28px] border border-white/10 bg-slate-950/35 p-5 shadow-[0_30px_80px_rgba(2,6,23,0.45)] backdrop-blur-xl sm:p-7">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+          <div className="max-w-4xl">
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">Swing Trading Dashboard</h1>
+              <span className="inline-flex items-center gap-1 rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-bold text-emerald-300">
+                <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_14px_rgba(110,231,183,0.8)]" />
+                LIVE
+              </span>
+            </div>
+            <p className="text-base text-slate-300">
+              Top NSE stocks scored equally by TITAN v20, TITAN v19, Swing AI v12.2, Swing AI v12.1 & KING v16.
+            </p>
+            <p className="mt-3 text-sm text-slate-500">
+              Full 5-engine scoring, live quotes and run snapshots in one dark terminal-style workspace.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3 xl:justify-end">
+            <button
+              onClick={() => handleRunScreener(false)}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 px-6 py-3 text-sm font-bold text-white shadow-[0_16px_40px_rgba(79,70,229,0.38)] transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-60"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+              {loading ? 'Running...' : 'Run Screener'}
+            </button>
+            <button
+              onClick={() => handleRunScreener(true)}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/45 px-5 py-3 text-sm font-semibold text-slate-300 shadow-inner shadow-white/5 transition-all hover:border-slate-500 hover:text-white disabled:opacity-60"
+              title="Force re-download all data"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Full Refresh
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-2 xl:justify-end">
-          <button
-            onClick={() => handleRunScreener(false)}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-600 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {loading ? 'Running...' : 'Run Screener'}
-          </button>
-          <button
-            onClick={() => handleRunScreener(true)}
-            disabled={loading}
-            className="flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 text-slate-300 rounded-lg text-sm transition-colors"
-            title="Force re-download all data"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Full Refresh
-          </button>
-        </div>
-      </div>
 
-      {status && (
-        <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg px-4 py-3 flex items-center gap-2">
-          <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
-          <span className="text-sm text-blue-300">{status}</span>
-        </div>
-      )}
-      {result && (
-        <div className="bg-slate-800 rounded-lg px-4 py-3 border border-slate-700 flex flex-wrap items-center gap-4 text-sm">
-          <span className="text-slate-300">
-            Checked: <span className="font-semibold text-white">{result.universe_size ?? result.total_analyzed ?? result.top_stocks?.length ?? 0}</span>
-          </span>
-          <span className="text-slate-300">
-            Analyzed: <span className="font-semibold text-white">{result.total_analyzed ?? displayStocks.length ?? 0}</span>
-          </span>
-          <span className="text-slate-300">
-            Showing: <span className="font-semibold text-white">{sortedTopStocks.length}</span>
-          </span>
-        </div>
-      )}
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-400" />
-          <span className="text-sm text-red-300">{error}</span>
-        </div>
-      )}
+        {status && (
+          <div className="mt-6 flex items-center gap-3 rounded-2xl border border-sky-400/30 bg-sky-500/10 px-4 py-3">
+            <Loader2 className="h-4 w-4 animate-spin text-sky-300" />
+            <span className="text-sm font-medium text-sky-200">{status}</span>
+          </div>
+        )}
 
-      {hasVerdicts && (
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={() => setVerdictFilter('BUYABLE')}
-            className={`min-w-[120px] flex-1 rounded-lg px-3 py-2 text-center transition-all cursor-pointer border ${
-              verdictFilter === 'BUYABLE'
-                ? 'bg-emerald-500/20 border-emerald-400 ring-2 ring-emerald-400/30 scale-[1.02]'
-                : 'bg-slate-700/50 border-slate-600 hover:border-slate-400 hover:bg-slate-700'
-            }`}
-          >
-            <div className={`text-xl font-bold ${verdictFilter === 'BUYABLE' ? 'text-emerald-300' : 'text-slate-300'}`}>{buyLikeCount}</div>
-            <div className={`text-[10px] font-medium ${verdictFilter === 'BUYABLE' ? 'text-emerald-300' : 'text-slate-400'}`}>BUY / STRONG BUY</div>
-          </button>
-          <button
-            onClick={() => setVerdictFilter('ALL')}
-            className={`min-w-[120px] flex-1 rounded-lg px-3 py-2 text-center transition-all cursor-pointer border ${
-              verdictFilter === 'ALL'
-                ? 'bg-blue-500/20 border-blue-400 ring-2 ring-blue-400/30 scale-[1.02]'
-                : 'bg-slate-700/50 border-slate-600 hover:border-slate-400 hover:bg-slate-700'
-            }`}
-          >
-            <div className={`text-xl font-bold ${verdictFilter === 'ALL' ? 'text-blue-300' : 'text-slate-300'}`}>{totalStocks}</div>
-            <div className={`text-[10px] font-medium ${verdictFilter === 'ALL' ? 'text-blue-300' : 'text-slate-400'}`}>ALL</div>
-          </button>
-          {[
-            { label: 'STRONG BUY', key: 'STRONG BUY', border: 'border-emerald-500/40', activeBorder: 'border-emerald-400', ring: 'ring-emerald-400/30', text: 'text-emerald-300', bg: 'bg-emerald-500/10', activeBg: 'bg-emerald-500/20' },
-            { label: 'BUY', key: 'BUY', border: 'border-green-500/40', activeBorder: 'border-green-400', ring: 'ring-green-400/30', text: 'text-green-300', bg: 'bg-green-500/10', activeBg: 'bg-green-500/20' },
-            { label: 'HOLD', key: 'HOLD', border: 'border-amber-500/40', activeBorder: 'border-amber-400', ring: 'ring-amber-400/30', text: 'text-amber-300', bg: 'bg-amber-500/10', activeBg: 'bg-amber-500/20' },
-            { label: 'WAIT', key: 'WAIT', border: 'border-orange-500/40', activeBorder: 'border-orange-400', ring: 'ring-orange-400/30', text: 'text-orange-300', bg: 'bg-orange-500/10', activeBg: 'bg-orange-500/20' },
-            { label: 'AVOID', key: 'AVOID', border: 'border-red-500/40', activeBorder: 'border-red-400', ring: 'ring-red-400/30', text: 'text-red-300', bg: 'bg-red-500/10', activeBg: 'bg-red-500/20' },
-          ].map(v => {
-            const isActive = verdictFilter === v.key;
-            return (
-              <button
-                key={v.key}
-                onClick={() => setVerdictFilter(isActive ? 'ALL' : v.key)}
-                className={`min-w-[112px] flex-1 rounded-lg px-3 py-2 text-center transition-all cursor-pointer border ${
-                  isActive
-                    ? `${v.activeBg} ${v.activeBorder} ring-2 ${v.ring} scale-[1.02]`
-                    : `${v.bg} ${v.border} hover:${v.activeBorder} hover:brightness-125`
-                }`}
-              >
-                <div className={`text-xl font-bold ${v.text}`}>{verdictCounts[v.key]}</div>
-                <div className={`text-[10px] font-medium ${v.text} opacity-75`}>{v.label}</div>
-              </button>
-            );
-          })}
-        </div>
-      )}
+        {error && (
+          <div className="mt-6 flex items-center gap-3 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3">
+            <AlertCircle className="h-4 w-4 text-rose-300" />
+            <span className="text-sm font-medium text-rose-200">{error}</span>
+          </div>
+        )}
+
+        {result && (
+          <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-9">
+            <MetricCard icon={CheckCircle} value={result.universe_size ?? result.total_analyzed ?? displayStocks.length} label="Checked" tone="blue" />
+            <MetricCard icon={TrendingUp} value={result.total_analyzed ?? displayStocks.length} label="Analyzed" tone="green" />
+            <MetricCard icon={Eye} value={sortedTopStocks.length} label="Showing" tone="purple" active={verdictFilter === 'ALL'} onClick={() => setVerdictFilter('ALL')} />
+            <MetricCard icon={ThumbsUp} value={buyLikeCount} label="Buy / Strong Buy" tone="amber" active={verdictFilter === 'BUYABLE'} onClick={() => setVerdictFilter('BUYABLE')} />
+            <MetricCard icon={Target} value={verdictCounts['STRONG BUY']} label="Strong Buy" tone="cyan" active={verdictFilter === 'STRONG BUY'} onClick={() => setVerdictFilter(verdictFilter === 'STRONG BUY' ? 'ALL' : 'STRONG BUY')} />
+            <MetricCard icon={Activity} value={verdictCounts['BUY']} label="Buy" tone="blue" active={verdictFilter === 'BUY'} onClick={() => setVerdictFilter(verdictFilter === 'BUY' ? 'ALL' : 'BUY')} />
+            <MetricCard icon={Hourglass} value={verdictCounts['HOLD']} label="Hold" tone="amber" active={verdictFilter === 'HOLD'} onClick={() => setVerdictFilter(verdictFilter === 'HOLD' ? 'ALL' : 'HOLD')} />
+            <MetricCard icon={Clock} value={verdictCounts['WAIT']} label="Wait" tone="purple" active={verdictFilter === 'WAIT'} onClick={() => setVerdictFilter(verdictFilter === 'WAIT' ? 'ALL' : 'WAIT')} />
+            <MetricCard icon={Shield} value={verdictCounts['AVOID']} label="Avoid" tone="red" active={verdictFilter === 'AVOID'} onClick={() => setVerdictFilter(verdictFilter === 'AVOID' ? 'ALL' : 'AVOID')} />
+          </div>
+        )}
+      </section>
 
       {verdictFilter !== 'ALL' && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/35 px-4 py-3">
           <span className="text-xs text-slate-400">
             Filtering by: <span className="font-semibold text-white">{verdictFilter === 'BUYABLE' ? 'BUY / STRONG BUY' : verdictFilter}</span>
           </span>
           <button
-            onClick={() => setVerdictFilter('BUYABLE')}
+            onClick={() => setVerdictFilter('ALL')}
             className="text-xs text-blue-400 hover:text-blue-300 underline"
           >
-            Reset filter
+            Clear filter
           </button>
         </div>
       )}
 
       {result && buyLikeCount === 0 && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3">
-          <div className="text-sm text-amber-300 font-medium">This run currently has no BUY or STRONG BUY candidates.</div>
-          <div className="text-xs text-slate-400 mt-1">
+        <div className="rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-500/10 to-yellow-950/20 px-5 py-4 shadow-[0_20px_50px_rgba(245,158,11,0.08)]">
+          <div className="text-sm font-bold text-amber-200">This run currently has no BUY or STRONG BUY candidates.</div>
+          <div className="mt-1 text-xs text-slate-400">
             Current verdicts: {verdictCounts['WAIT']} WAIT, {verdictCounts['AVOID']} AVOID.
           </div>
         </div>
       )}
 
       {sortedActionable.length > 0 && (
-        <div className="bg-slate-800 rounded-lg p-4 border border-emerald-500/20">
-          <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <h2 className="text-lg font-semibold text-white">
+        <section className="rounded-[24px] border border-emerald-400/20 bg-slate-950/40 p-4 shadow-[0_25px_70px_rgba(2,6,23,0.35)] backdrop-blur-xl sm:p-5">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <h2 className="text-xl font-black text-white">
               Actionable Now
               <span className="ml-2 text-xs font-normal text-slate-400">
                 {sortedActionable.filter(s => s.action_type === 'BUY').length} BUY
@@ -457,13 +456,13 @@ export default function Dashboard() {
             sortOrder={actionableSortOrder}
             onToggleSort={() => setActionableSortOrder(toggleSortOrder)}
           />
-        </div>
+        </section>
       )}
 
       {sortedTopStocks.length > 0 && (
-        <div className="bg-slate-800 rounded-lg p-4">
-          <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <h2 className="text-lg font-semibold text-white">
+        <section className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4 shadow-[0_25px_70px_rgba(2,6,23,0.35)] backdrop-blur-xl sm:p-5">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <h2 className="text-xl font-black text-white">
               {verdictFilter === 'ALL'
                 ? `All Screened Stocks (${sortedTopStocks.length})`
                 : verdictFilter === 'BUYABLE'
@@ -481,12 +480,12 @@ export default function Dashboard() {
             sortOrder={stockSortOrder}
             onToggleSort={() => setStockSortOrder(toggleSortOrder)}
           />
-        </div>
+        </section>
       )}
 
       {runs.length > 0 && (
-        <div className="bg-slate-800 rounded-lg p-4">
-          <h2 className="text-sm font-semibold text-slate-400 mb-2">Recent Runs</h2>
+        <section className="rounded-[24px] border border-white/10 bg-slate-950/35 p-4 backdrop-blur-xl">
+          <h2 className="mb-3 text-sm font-bold uppercase tracking-[0.22em] text-slate-500">Recent Runs</h2>
           <div className="flex gap-2 flex-wrap">
             {runs.map(r => (
               <button
@@ -494,8 +493,8 @@ export default function Dashboard() {
                 onClick={() => loadRunResults(r.run_id)}
                 className={`flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs transition-colors ${
                   result?.run_id === r.run_id
-                    ? 'bg-emerald-600/30 border border-emerald-500/40 text-emerald-300'
-                    : 'bg-slate-700/50 hover:bg-slate-700 text-slate-300'
+                    ? 'bg-emerald-500/15 border border-emerald-400/35 text-emerald-300'
+                    : 'border border-white/8 bg-white/5 text-slate-300 hover:bg-white/10'
                 }`}
               >
                 {r.status === 'completed' ? (
@@ -507,11 +506,11 @@ export default function Dashboard() {
               </button>
             ))}
           </div>
-        </div>
+        </section>
       )}
 
       {!result && !loading && (
-        <div className="bg-slate-800 rounded-lg p-12 text-center">
+        <div className="rounded-[28px] border border-white/10 bg-slate-950/40 p-12 text-center backdrop-blur-xl">
           <TrendingUpIcon className="w-12 h-12 text-slate-600 mx-auto mb-4" />
           <h2 className="text-xl font-semibold text-white mb-2">Ready to Screen</h2>
           <p className="text-slate-400 mb-4">
@@ -535,11 +534,11 @@ function TrendingUpIcon(props) {
 function SortSelect({ value, onChange }) {
   return (
     <label className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-      <span>Composite</span>
+      <span>View Mode:</span>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="min-w-[160px] rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
+        className="min-w-[180px] rounded-xl border border-indigo-400/40 bg-slate-950/80 px-3 py-2 text-sm font-semibold text-slate-100 shadow-inner shadow-black/30 focus:border-sky-400 focus:outline-none"
       >
         <option value={SORT_OPTIONS.DESC}>Highest to Lowest</option>
         <option value={SORT_OPTIONS.ASC}>Lowest to Highest</option>
