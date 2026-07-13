@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, RefreshCw, Loader2, Trash2, DollarSign, TrendingUp, TrendingDown } from 'lucide-react';
 import { getPortfolio, addToPortfolio, refreshPortfolio, sellStock, deletePortfolioEntry } from '../lib/api';
@@ -21,24 +21,29 @@ export default function Portfolio() {
     sell_date: new Date().toISOString().split('T')[0], sell_price: '', notes: '',
   });
 
-  useEffect(() => { loadPortfolio(); }, [filter]);
-
-  async function loadPortfolio() {
+  const loadPortfolio = useCallback(async () => {
     setLoading(true);
     try {
       const res = await getPortfolio(filter);
       setEntries(res.data.entries || []);
       setSummary(res.data.summary || null);
-    } catch (e) { console.error(e); }
+    } catch (error) { console.error(error); }
     setLoading(false);
-  }
+  }, [filter]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadPortfolio();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadPortfolio]);
 
   async function handleRefresh() {
     setRefreshing(true);
     try {
       await refreshPortfolio();
       await loadPortfolio();
-    } catch (e) { console.error(e); }
+    } catch (error) { console.error(error); }
     setRefreshing(false);
   }
 
@@ -72,7 +77,7 @@ export default function Portfolio() {
     try {
       await deletePortfolioEntry(entryId);
       await loadPortfolio();
-    } catch (err) { alert('Failed'); }
+    } catch { alert('Failed'); }
   }
 
   const actionColor = (action) => {

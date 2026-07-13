@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search, Loader2, ArrowRight, History, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { lookupStock } from '../lib/api';
@@ -11,18 +11,17 @@ export default function Lookup() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
-  const [history, setHistory] = useState([]);
-
-  useEffect(() => {
+  const [history, setHistory] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(LOOKUP_HISTORY_KEY) || '[]');
       if (Array.isArray(saved)) {
-        setHistory(saved.filter(item => typeof item === 'string'));
+        return saved.filter(item => typeof item === 'string');
       }
     } catch {
-      setHistory([]);
+      return [];
     }
-  }, []);
+    return [];
+  });
 
   function persistHistory(nextHistory) {
     setHistory(nextHistory);

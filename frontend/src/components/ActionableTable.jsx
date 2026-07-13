@@ -252,12 +252,16 @@ export default function ActionableTable({ stocks, runId, sortOrder = 'desc', onT
   const [page, setPage] = useState(0);
 
   useEffect(() => {
-    setPage(0);
+    const timer = window.setTimeout(() => {
+      setPage(0);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [stocks]);
 
   // Paginated (filtering is now done by Dashboard verdict cards)
   const totalPages = Math.ceil((stocks?.length || 0) / PAGE_SIZE);
-  const pageStocks = (stocks || []).slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const currentPage = Math.min(page, Math.max(0, totalPages - 1));
+  const pageStocks = (stocks || []).slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
 
   if (!stocks || stocks.length === 0) {
     return (
@@ -308,7 +312,7 @@ export default function ActionableTable({ stocks, runId, sortOrder = 'desc', onT
               <ActionRow
                 key={s.symbol}
                 s={s}
-                index={page * PAGE_SIZE + i + 1}
+                index={currentPage * PAGE_SIZE + i + 1}
                 runId={runId}
               />
             ))}
@@ -318,7 +322,7 @@ export default function ActionableTable({ stocks, runId, sortOrder = 'desc', onT
 
       {/* Pagination */}
       <Pagination
-        page={page}
+        page={currentPage}
         totalPages={totalPages}
         onPageChange={setPage}
         totalItems={stocks.length}

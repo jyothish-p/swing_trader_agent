@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useMemo } from 'react';
+import { useCallback } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -66,7 +67,8 @@ function toggleSortOrder(direction) {
   return direction === SORT_OPTIONS.DESC ? SORT_OPTIONS.ASC : SORT_OPTIONS.DESC;
 }
 
-function MetricCard({ icon: Icon, value, label, tone = 'blue', active = false, onClick }) {
+function MetricCard({ icon, value, label, tone = 'blue', active = false, onClick }) {
+  const CardIcon = icon;
   const tones = {
     blue: 'from-sky-500/20 to-blue-950/40 border-sky-500/35 text-sky-300 shadow-sky-500/10',
     green: 'from-emerald-500/20 to-emerald-950/35 border-emerald-500/35 text-emerald-300 shadow-emerald-500/10',
@@ -84,7 +86,7 @@ function MetricCard({ icon: Icon, value, label, tone = 'blue', active = false, o
         tones[tone] || tones.blue
       } ${active ? 'scale-[1.025] ring-2 ring-white/20' : 'hover:-translate-y-0.5 hover:border-white/25'} ${onClick ? 'cursor-pointer' : 'cursor-default'}`}
     >
-      <Icon className="mx-auto mb-4 h-8 w-8 opacity-95 transition-transform group-hover:scale-110" />
+      <CardIcon className="mx-auto mb-4 h-8 w-8 opacity-95 transition-transform group-hover:scale-110" />
       <div className="text-3xl font-black tracking-tight text-white">{value}</div>
       <div className="mt-1 text-sm font-medium text-slate-300">{label}</div>
     </button>
@@ -108,9 +110,67 @@ export default function Dashboard() {
     [runs]
   );
 
-  useEffect(() => {
-    loadRuns(true);
+  const loadRunResults = useCallback(async (runId) => {
+    try {
+      const res = await getScreenerResults(runId);
+      if (res.data?.full_engine_complete === false) {
+        setError('This run does not contain full 5-engine results. Start a fresh screener run after the latest deploy.');
+        setLoading(false);
+        setStatus('');
+        setActiveRunId(null);
+        return;
+      }
+      setResult(normalizeScreenerResult(res.data, runId));
+      setError('');
+      setStatus('');
+      setLoading(false);
+      setActiveRunId(null);
+    } catch (error) {
+      console.error('Failed to load run results:', error);
+      setError(error.response?.data?.detail || error.message || 'Failed to load screener results');
+      setLoading(false);
+      setStatus('');
+      setActiveRunId(null);
+    }
   }, []);
+
+  const loadRuns = useCallback(async (autoLoadLatest = false) => {
+    try {
+      const res = await getScreenerRuns(5);
+      const latestRuns = res.data.runs || [];
+      setRuns(latestRuns);
+      if (autoLoadLatest) {
+        const running = latestRuns.find((r) => (
+          r.status === 'running'
+          && r.started_at
+          && (Date.now() - Date.parse(r.started_at)) < STALE_RUN_MS
+        ));
+        if (running) {
+          setLoading(true);
+          setStatus('Resuming latest screener run...');
+          setActiveRunId(running.run_id);
+          return;
+        }
+
+        const latest = latestRuns.find(r => r.status === 'completed' && r.has_full_results);
+        if (latest) {
+          await loadRunResults(latest.run_id);
+        } else {
+          setLoading(false);
+          setStatus('');
+        }
+      }
+    } catch {
+      // No runs yet
+    }
+  }, [loadRunResults]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadRuns(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadRuns]);
 
   useEffect(() => {
     if (result?.run_id) {
@@ -148,9 +208,9 @@ export default function Dashboard() {
             setLoading(false);
             setActiveRunId(null);
             loadRuns(false);
-          } catch (e) {
+          } catch (error) {
             if (cancelled) return;
-            setError(e.response?.data?.detail || e.message || 'Failed to load screener results');
+            setError(error.response?.data?.detail || error.message || 'Failed to load screener results');
             setStatus('');
             setLoading(false);
             setActiveRunId(null);
@@ -167,7 +227,7 @@ export default function Dashboard() {
         }
 
         setStatus(data.message || 'Running screener...');
-      } catch (e) {
+      } catch {
         if (cancelled) return;
         setStatus('Running screener...');
       }
@@ -183,7 +243,7 @@ export default function Dashboard() {
       cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [activeRunId]);
+  }, [activeRunId, loadRuns]);
 
   useEffect(() => {
     if (loading || activeRunId) return undefined;
@@ -207,9 +267,9 @@ export default function Dashboard() {
 
         setResult(normalizeScreenerResult(resultsResponse.data, latestCompleted.run_id));
         setError('');
-      } catch (e) {
+      } catch (error) {
         if (!cancelled) {
-          console.error('Live dashboard refresh failed:', e);
+          console.error('Live dashboard refresh failed:', error);
         }
       }
     };
@@ -220,61 +280,6 @@ export default function Dashboard() {
       clearInterval(intervalId);
     };
   }, [activeRunId, latestCompletedRunId, loading, result?.run_id]);
-
-  async function loadRuns(autoLoadLatest = false) {
-    try {
-      const res = await getScreenerRuns(5);
-      const latestRuns = res.data.runs || [];
-      setRuns(latestRuns);
-      if (autoLoadLatest) {
-        const running = latestRuns.find((r) => (
-          r.status === 'running'
-          && r.started_at
-          && (Date.now() - Date.parse(r.started_at)) < STALE_RUN_MS
-        ));
-        if (running) {
-          setLoading(true);
-          setStatus('Resuming latest screener run...');
-          setActiveRunId(running.run_id);
-          return;
-        }
-
-        const latest = latestRuns.find(r => r.status === 'completed' && r.has_full_results);
-        if (latest) {
-          await loadRunResults(latest.run_id);
-        } else {
-          setLoading(false);
-          setStatus('');
-        }
-      }
-    } catch (e) {
-      // No runs yet
-    }
-  }
-
-  async function loadRunResults(runId) {
-    try {
-      const res = await getScreenerResults(runId);
-      if (res.data?.full_engine_complete === false) {
-        setError('This run does not contain full 5-engine results. Start a fresh screener run after the latest deploy.');
-        setLoading(false);
-        setStatus('');
-        setActiveRunId(null);
-        return;
-      }
-      setResult(normalizeScreenerResult(res.data, runId));
-      setError('');
-      setStatus('');
-      setLoading(false);
-      setActiveRunId(null);
-    } catch (e) {
-      console.error('Failed to load run results:', e);
-      setError(e.response?.data?.detail || e.message || 'Failed to load screener results');
-      setLoading(false);
-      setStatus('');
-      setActiveRunId(null);
-    }
-  }
 
   async function handleRunScreener(forceRefresh = false) {
     setLoading(true);
@@ -287,8 +292,8 @@ export default function Dashboard() {
         setStatus(res.data.message);
       }
       setActiveRunId(res.data.run_id);
-    } catch (e) {
-      setError(e.response?.data?.detail || e.message || 'Screener failed');
+    } catch (error) {
+      setError(error.response?.data?.detail || error.message || 'Screener failed');
       setStatus('');
       setActiveRunId(null);
       setLoading(false);
@@ -308,8 +313,6 @@ export default function Dashboard() {
       if (v && verdictCounts[v] !== undefined) verdictCounts[v]++;
     });
   }
-  const hasVerdicts = Object.values(verdictCounts).some(v => v > 0);
-  const totalStocks = Object.values(verdictCounts).reduce((a, b) => a + b, 0);
   const buyLikeCount = (verdictCounts['STRONG BUY'] || 0) + (verdictCounts['BUY'] || 0);
 
   const filteredTopStocks = useMemo(() => {
@@ -326,16 +329,17 @@ export default function Dashboard() {
     [filteredTopStocks, stockSortOrder]
   );
 
+  const actionableStocks = useMemo(() => result?.actionable_stocks || [], [result?.actionable_stocks]);
   const filteredActionable = useMemo(() => {
-    if (!result?.actionable_stocks) return [];
+    if (!actionableStocks.length) return [];
     if (verdictFilter === 'BUYABLE') {
-      return result.actionable_stocks.filter(s =>
+      return actionableStocks.filter(s =>
         s.action_type === 'BUY' || ['STRONG BUY', 'BUY'].includes(s.verdict)
       );
     }
-    if (verdictFilter === 'ALL') return result.actionable_stocks;
-    return result.actionable_stocks.filter(s => s.verdict === verdictFilter);
-  }, [result?.actionable_stocks, verdictFilter]);
+    if (verdictFilter === 'ALL') return actionableStocks;
+    return actionableStocks.filter(s => s.verdict === verdictFilter);
+  }, [actionableStocks, verdictFilter]);
 
   const sortedActionable = useMemo(
     () => sortByComposite(filteredActionable, actionableSortOrder),

@@ -194,27 +194,37 @@ function RankCell({ rank }) {
 }
 
 export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggleSort }) {
-  const safeStocks = Array.isArray(stocks) ? stocks : [];
+  const safeStocks = useMemo(() => (Array.isArray(stocks) ? stocks : []), [stocks]);
   const [page, setPage] = useState(0);
   const [liveMap, setLiveMap] = useState({});
 
   const totalPages = Math.max(1, Math.ceil(safeStocks.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages - 1);
   const pageStocks = useMemo(
-    () => safeStocks.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
-    [page, safeStocks]
+    () => safeStocks.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE),
+    [currentPage, safeStocks]
   );
 
   useEffect(() => {
-    setPage(0);
+    const timer = window.setTimeout(() => {
+      setPage(0);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [runId, safeStocks.length]);
 
   useEffect(() => {
     if (page < totalPages) return;
-    setPage(0);
+    const timer = window.setTimeout(() => {
+      setPage(0);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [page, totalPages]);
 
   useEffect(() => {
-    setLiveMap({});
+    const timer = window.setTimeout(() => {
+      setLiveMap({});
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [runId]);
 
   useEffect(() => {
@@ -304,7 +314,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
               const liveQuote = liveMap[stock.symbol];
               const displayPrice = liveQuote?.last_price ?? stock.cmp;
 
-              const rank = page * PAGE_SIZE + index + 1;
+              const rank = currentPage * PAGE_SIZE + index + 1;
 
               return (
                 <tr
@@ -388,7 +398,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
       </div>
 
       <Pagination
-        page={page}
+        page={currentPage}
         totalPages={totalPages}
         onPageChange={setPage}
         totalItems={safeStocks.length}

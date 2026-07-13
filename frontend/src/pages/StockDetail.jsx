@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, FileText, Loader2 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, ComposedChart, Area, ReferenceLine
@@ -24,16 +24,9 @@ export default function StockDetail() {
   const [matePro, setMatePro] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('mate-pro');
+  const [selectedEngineKey, setSelectedEngineKey] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    loadData(() => cancelled);
-    return () => {
-      cancelled = true;
-    };
-  }, [symbol, timeframe, effectiveRunId]);
-
-  async function loadData(isCancelled = () => false) {
+  const loadData = useCallback(async (isCancelled = () => false) => {
     setLoading(true);
     setMatePro(null);
     try {
@@ -61,10 +54,23 @@ export default function StockDetail() {
     }
     if (isCancelled()) return;
     setLoading(false);
-  }
+  }, [effectiveRunId, symbol, timeframe]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      loadData(() => cancelled);
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [loadData]);
 
   const ta = analysis?.analysis?.[timeframe] || analysis?.analysis?.daily || {};
   const chart = chartData?.chart_data || [];
+  const modelEntries = orderedModelEntries(matePro?.models);
+  const selectedEngine = selectedEngineKey ? matePro?.models?.[selectedEngineKey] : null;
   const sectorMomentum = matePro?.context?.sector_momentum_score ?? 0;
   const sectorMomentumTone = sectorMomentum >= 6
     ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
@@ -115,18 +121,18 @@ export default function StockDetail() {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 border-b border-slate-700">
-            {['mate-pro', 'chart', 'indicators', 'levels', 'history'].map(tab => (
+          <div className="flex gap-1 border-b border-slate-700 overflow-x-auto">
+            {['mate-pro', 'report', 'chart', 'indicators', 'levels', 'history'].map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                className={`shrink-0 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === tab
                     ? 'border-emerald-400 text-white'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {tab === 'mate-pro' ? 'MATE-PRO' : tab === 'report' ? 'Full Report' : tab.charAt(0).toUpperCase() + tab.slice(1)}
               </button>
             ))}
           </div>
@@ -172,8 +178,17 @@ export default function StockDetail() {
 
               {/* Individual Model Scores */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {Object.entries(matePro.models).map(([key, model]) => (
-                  <div key={key} className="bg-slate-800 rounded-lg p-4">
+                {modelEntries.map(([key, model]) => (
+                  <button
+                    type="button"
+                    key={key}
+                    onClick={() => setSelectedEngineKey(selectedEngineKey === key ? null : key)}
+                    className={`rounded-lg border p-4 text-left transition-all ${
+                      selectedEngineKey === key
+                        ? 'border-emerald-400 bg-slate-800 ring-2 ring-emerald-400/20'
+                        : 'border-transparent bg-slate-800 hover:border-slate-600 hover:bg-slate-800/80'
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-3">
                       <h3 className="text-sm font-semibold text-white">{model.model}</h3>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded ${
@@ -186,6 +201,9 @@ export default function StockDetail() {
                     </div>
                     <div className="text-2xl font-bold text-white mb-3">
                       {model.scanner_score || model.selection_total}/100
+                    </div>
+                    <div className="mb-3 text-[11px] font-medium text-emerald-300">
+                      {selectedEngineKey === key ? 'Report chart open' : 'Click for full report chart'}
                     </div>
                     {/* Component breakdown */}
                     <div className="space-y-1.5">
@@ -230,9 +248,17 @@ export default function StockDetail() {
                         <span className="text-xs font-mono text-blue-300">{model.probability_pct || model.final_probability}%</span>
                       </div>
                     )}
-                  </div>
+                  </button>
                 ))}
               </div>
+
+              {selectedEngine && (
+                <EngineFullReportPanel
+                  model={selectedEngine}
+                  matePro={matePro}
+                  onClose={() => setSelectedEngineKey(null)}
+                />
+              )}
 
               <div className={`rounded-lg border px-4 py-3 ${sectorMomentumTone}`}>
                 <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
@@ -453,6 +479,17 @@ export default function StockDetail() {
             </div>
           )}
 
+          {/* Full Report Tab */}
+          {activeTab === 'report' && matePro && (
+            <FullReport symbol={symbol} matePro={matePro} ta={ta} />
+          )}
+
+          {activeTab === 'report' && !matePro && (
+            <div className="bg-slate-800 rounded-lg p-8 text-center">
+              <p className="text-slate-400">Full report is available after MATE-PRO analysis loads.</p>
+            </div>
+          )}
+
           {/* Chart Tab */}
           {activeTab === 'chart' && chart.length > 0 && (
             <div className="space-y-4">
@@ -669,6 +706,503 @@ export default function StockDetail() {
       )}
     </div>
   );
+}
+
+const ENGINE_ORDER = [
+  'titan',
+  'titan_v19',
+  'swing_ai_v12_2',
+  'swing_ai_v12_1',
+  'king',
+];
+
+function orderedModelEntries(models = {}) {
+  const ordered = ENGINE_ORDER
+    .filter(key => models[key])
+    .map(key => [key, models[key]]);
+  const remaining = Object.entries(models).filter(([key]) => !ENGINE_ORDER.includes(key));
+  return [...ordered, ...remaining];
+}
+
+function buildEngineChartData(model) {
+  return Object.entries(model.components || {}).map(([key, comp]) => {
+    const max = Number(comp.max) || 0;
+    const score = Number(comp.score) || 0;
+    const pct = max > 0 ? Math.round((score / max) * 100) : 0;
+    return {
+      name: labelize(key),
+      pct: Math.max(0, Math.min(100, pct)),
+      scoreLabel: `${formatNumber(comp.score)}/${formatNumber(comp.max)}`,
+    };
+  });
+}
+
+function FullReport({ symbol, matePro, ta }) {
+  const stockReport = buildStockReport(symbol, matePro, ta);
+  const models = orderedModelEntries(matePro.models);
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-slate-800 rounded-lg p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <FileText className="w-5 h-5 text-emerald-300" />
+          <h3 className="text-lg font-semibold text-white">Full Report</h3>
+        </div>
+        <pre className="max-h-[640px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950/60 p-4 font-mono text-sm leading-7 text-slate-200">
+          {stockReport}
+        </pre>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {models.map(([key, model]) => (
+          <EngineReportCard key={key} model={model} matePro={matePro} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EngineReportCard({ model, matePro }) {
+  const score = getModelScore(model);
+  const report = buildEngineReport(model, matePro);
+
+  return (
+    <div className="bg-slate-800 rounded-lg p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div>
+          <h3 className="text-base font-semibold text-white">{model.model}</h3>
+          <p className="text-xs text-slate-400">Reason for engine score</p>
+        </div>
+        <div className="text-right">
+          <div className="text-xl font-bold text-white">{score}/100</div>
+          <div className={`text-xs font-bold ${verdictTextClass(model.verdict)}`}>{model.verdict || '-'}</div>
+        </div>
+      </div>
+      <pre className="max-h-[460px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950/50 p-3 font-mono text-xs leading-6 text-slate-200">
+        {report}
+      </pre>
+    </div>
+  );
+}
+
+function EngineFullReportPanel({ model, matePro, onClose }) {
+  const score = getModelScore(model);
+  const probability = model.probability_pct ?? model.final_probability ?? model.base_probability;
+  const chartData = buildEngineChartData(model);
+  const report = buildEngineReport(model, matePro);
+  const chartHeight = Math.max(260, chartData.length * 42);
+
+  return (
+    <div className="rounded-lg border border-emerald-400/30 bg-slate-800 p-5 shadow-lg shadow-emerald-950/20">
+      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-emerald-300">Engine Full Report Chart</div>
+          <h3 className="mt-1 text-xl font-semibold text-white">{model.model}</h3>
+          <p className="mt-1 text-sm text-slate-400">Component score chart and reason for this model verdict.</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="self-start rounded border border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-slate-400 hover:text-white"
+        >
+          Close
+        </button>
+      </div>
+
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-5">
+        <EngineStat label="Score" value={`${score}/100`} />
+        <EngineStat label="Verdict" value={model.verdict || '-'} tone={verdictTextClass(model.verdict)} />
+        <EngineStat label="Probability" value={probability != null ? `${formatNumber(probability)}%` : '-'} />
+        <EngineStat label="Gate" value={model.liquidity_gate || '-'} />
+        <EngineStat label="Action" value={model.selection_action || matePro.trade_plans?.scanner_plan?.action || '-'} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+        <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-4">
+          <h4 className="mb-3 text-sm font-semibold text-white">Score Components</h4>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={chartHeight}>
+              <BarChart data={chartData} layout="vertical" margin={{ top: 6, right: 24, bottom: 6, left: 18 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
+                <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={142}
+                  tick={{ fontSize: 11, fill: '#cbd5e1' }}
+                />
+                <Tooltip
+                  cursor={{ fill: 'rgba(15, 23, 42, 0.7)' }}
+                  contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
+                  formatter={(value, _name, props) => [`${value}% (${props.payload.scoreLabel})`, 'Score']}
+                />
+                <Bar dataKey="pct" fill="#60a5fa" radius={[0, 4, 4, 0]} barSize={18} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="rounded border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-400">
+              Component score chart is not available for this saved model snapshot.
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-4">
+          <h4 className="mb-3 text-sm font-semibold text-white">Reason Report</h4>
+          <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-6 text-slate-200">
+            {report}
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EngineStat({ label, value, tone = 'text-white' }) {
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className={`mt-1 text-sm font-bold ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
+function buildStockReport(symbol, matePro, ta) {
+  const comp = matePro.composite || {};
+  const metrics = matePro.metrics || {};
+  const context = matePro.context || {};
+  const levels = matePro.levels || {};
+  const scannerPlan = matePro.trade_plans?.scanner_plan || {};
+  const positionalPlan = matePro.trade_plans?.positional_plan || {};
+  const supports = formatPriceList(levels.supports);
+  const resistances = formatPriceList(levels.resistances);
+  const targets = Object.entries(scannerPlan.targets || {})
+    .map(([label, target]) => `${label}: ${formatMoney(target?.price)} (+${target?.pct ?? '-'}%)`)
+    .join(', ') || 'Not available';
+
+  return [
+    `## Chart Analysis Report: ${symbol}`,
+    '',
+    '### 1. Overview',
+    `- Timeframe analyzed: Daily primary with weekly/monthly context`,
+    `- Overall trend: ${trendLabel(context, metrics)}`,
+    `- Current price snapshot: ${formatMoney(matePro.cmp)}${matePro.timestamp ? ` as of ${formatTimestamp(matePro.timestamp)}` : ''}`,
+    `- Final model: 5-engine MATE-PRO consensus`,
+    `- Final score: ${comp.composite_score ?? '-'} / 100`,
+    `- Final verdict: ${comp.consensus_verdict || '-'} (${comp.agreement || 'agreement not available'})`,
+    `- Trend summary: ${trendSummary(context, metrics, ta)}`,
+    '',
+    '### 2. Chart Patterns',
+    `- ${patternSummary(context, levels)}`,
+    '',
+    '### 3. Candlestick / Price Quality',
+    `- ${candleSummary(context, metrics, matePro)}`,
+    '',
+    '### 4. Technical Indicators',
+    `- RSI: ${rsiSummary(metrics.rsi)}`,
+    `- MACD: ${metrics.macd_crossover ? 'MACD is bullish, supporting upside momentum.' : 'MACD is not showing a confirmed bullish crossover.'}`,
+    `- Bollinger Bands: ${bollingerSummary(ta)}`,
+    `- Moving Averages: ${movingAverageSummary(metrics, ta)}`,
+    `- ATR / Volatility: ATR is ${formatNumber(metrics.atr_pct)}%, with ${context.volatility_state || 'unknown'} volatility.`,
+    `- Volume: Volume ratio is ${formatNumber(metrics.vol_ratio)}x and 10D traded value is ${formatMoney(metrics.value_10d_cr)} Cr.`,
+    '',
+    '### 5. Price Action',
+    `- Key support levels: ${supports}`,
+    `- Key resistance levels: ${resistances}`,
+    `- Breakout trigger: ${formatMoney(levels.trigger)}`,
+    `- Invalidation / stop level: ${formatMoney(levels.invalidation)}`,
+    `- Overhead supply: ${labelize(context.overhead_supply || 'not_available')}`,
+    '',
+    '### 6. Sector And Market Context',
+    `- Sector: ${context.sector || 'Not available'}${context.sector_index ? ` (${context.sector_index})` : ''}`,
+    `- Sector momentum: ${context.sector_momentum_score ?? 0}/10, structure ${context.sector_structure || '-'}`,
+    `- Sector performance: 1M ${formatPct(context.sector_perf_1m)}, 3M ${formatPct(context.sector_perf_3m)}, 6M ${formatPct(context.sector_perf_6m)}`,
+    `- Nifty trend: ${context.nifty_trend_state || '-'} with weekly RSI ${formatNumber(context.nifty_weekly_rsi)}`,
+    `- News / sentiment: ${context.news_tone || '-'} news tone, retail psychology ${context.retail_psych || '-'}`,
+    '',
+    '### 7. Trade Plan',
+    `- Action: ${scannerPlan.action || '-'}`,
+    `- Entry: breakout above ${formatMoney(scannerPlan.entry_breakout)}`,
+    `- Retest zone: ${formatRange(scannerPlan.entry_retest_zone)}`,
+    `- Stop loss: ${formatMoney(scannerPlan.stop_loss)} (${scannerPlan.sl_pct ?? metrics.sl_pct ?? '-'}%)`,
+    `- Targets: ${targets}`,
+    `- Risk/reward to T2: ${scannerPlan.rr_t2 ? `1:${scannerPlan.rr_t2}` : '-'}`,
+    `- Positional entry zone: ${formatRange(positionalPlan.entry_zone)}`,
+    `- Positional hold rule: ${positionalPlan.hold_rule || '-'}`,
+    '',
+    '### 8. Engine Consensus',
+    ...orderedModelEntries(matePro.models).map(([, model]) => (
+      `- ${model.model}: ${getModelScore(model)}/100, ${model.verdict || '-'} - ${engineOneLine(model, matePro)}`
+    )),
+    '',
+    '### 9. Final View',
+    `- ${matePro.one_line_verdict || finalView(matePro)}`,
+  ].join('\n');
+}
+
+function buildEngineReport(model, matePro) {
+  const score = getModelScore(model);
+  const components = Object.entries(model.components || {});
+  const lines = [
+    `## Engine Report: ${model.model}`,
+    '',
+    '### Score Snapshot',
+    `- Score: ${score}/100`,
+    `- Verdict: ${model.verdict || '-'}`,
+    `- Probability: ${model.probability_pct ?? model.final_probability ?? model.base_probability ?? '-'}%`,
+  ];
+
+  if (model.selection_grade || model.selection_action || model.liquidity_gate) {
+    lines.push(`- Gate / action: ${model.liquidity_gate || '-'} gate, ${model.selection_grade || '-'} grade, ${model.selection_action || '-'} action`);
+  }
+
+  lines.push('', '### Why The Score Came Out This Way');
+  if (components.length) {
+    components.forEach(([key, comp]) => {
+      lines.push(`- ${labelize(key)}: ${comp.score}/${comp.max}. ${componentReason(key, comp, model, matePro)}`);
+    });
+  } else {
+    lines.push('- Component-level score data was not saved in this screener snapshot.');
+  }
+
+  lines.push('', '### Adjustments And Filters');
+  if (model.penalties > 0) {
+    lines.push(`- Penalties: -${model.penalties}. ${(model.penalty_reasons || []).join('; ') || 'Penalty reason not specified.'}`);
+  } else {
+    lines.push('- Penalties: none applied.');
+  }
+
+  if (model.setup_family) lines.push(`- Setup family: ${labelize(model.setup_family)}.`);
+  if (model.pattern_engine != null) lines.push(`- Pattern engine: ${model.pattern_engine}/100 from the detected chart pattern.`);
+  if (model.liquidity_score != null) lines.push(`- Liquidity: ${model.liquidity_score}/10 from phase, delivery, VWAP, and supply checks.`);
+  if (model.indicator_score != null) lines.push(`- Indicator stack: ${model.indicator_score}/20 from RSI, MACD, EMA stack, and volatility.`);
+  if (model.fib_avwap_score != null) lines.push(`- Fib / AVWAP: ${model.fib_avwap_score}/10 from levels, VWAP, and nearby supports.`);
+  if (model.base_weekly_score != null) lines.push(`- Base weekly score: ${model.base_weekly_score}/${model.base_weekly_max || 40}.`);
+  if (model.velocity_points != null) lines.push(`- Velocity: ${model.velocity_points}/${model.velocity_max || 5}.`);
+  if (model.sector_boost != null) lines.push(`- Sector boost: ${model.sector_boost} points.`);
+  if (model.sector_boost_impact != null) lines.push(`- Sector boost impact: +${model.sector_boost_impact} probability points.`);
+  if (model.backtest_score != null) lines.push(`- Backtest score: ${model.backtest_score}/20.`);
+  if (model.positional_score != null) lines.push(`- Positional read: ${model.positional_score}/${model.positional_max || 30}${model.positional_class ? ` (${model.positional_class})` : ''}.`);
+
+  lines.push('', '### Verdict Reason');
+  lines.push(`- ${engineOneLine(model, matePro)}`);
+
+  return lines.join('\n');
+}
+
+function componentReason(key, comp, model, matePro) {
+  const context = matePro.context || {};
+  const metrics = matePro.metrics || {};
+  const levels = matePro.levels || {};
+  const ratio = componentRatio(comp);
+  const strength = ratio >= 0.75 ? 'strong' : ratio >= 0.5 ? 'moderate' : 'weak';
+  const readable = labelize(key);
+
+  if (key.includes('weekly_tailwind') || key.includes('trend_power')) {
+    return `${strengthText(strength)} because weekly structure is ${context.weekly_structure || '-'}, daily bias is ${context.daily_bias || '-'}, and price/RSI alignment is ${formatNumber(metrics.rsi)} RSI.`;
+  }
+  if (key.includes('daily_setup') || key.includes('setup_quality')) {
+    return `${strengthText(strength)} because the detected setup is ${labelize(context.pattern || 'unclear')} with trigger ${formatMoney(levels.trigger)}.`;
+  }
+  if (key.includes('trigger_clarity')) {
+    return `${strengthText(strength)} because trigger ${formatMoney(levels.trigger)} and invalidation ${formatMoney(levels.invalidation)} define the trade clearly.`;
+  }
+  if (key.includes('volume') || key.includes('delivery')) {
+    return `${strengthText(strength)} with volume ratio ${formatNumber(metrics.vol_ratio)}x and delivery trend ${metrics.delivery_trend || context.delivery_trend || '-'}.`;
+  }
+  if (key.includes('move_capacity') || key.includes('velocity')) {
+    return `${strengthText(strength)} because ATR is ${formatNumber(metrics.atr_pct)}% and volatility is ${context.volatility_state || '-'}.`;
+  }
+  if (key.includes('overhead') || key.includes('vrvp')) {
+    return `${strengthText(strength)} because overhead supply is ${labelize(context.overhead_supply || 'not_available')}.`;
+  }
+  if (key.includes('sector')) {
+    return `${strengthText(strength)} because sector momentum is ${context.sector_momentum_score ?? 0}/10 with ${context.sector_positive_peers ?? 0} positive peers.`;
+  }
+  if (key.includes('risk') || key.includes('risk_reward')) {
+    return `${strengthText(strength)} because stop-loss risk is ${metrics.sl_pct ?? '-'}% from current levels.`;
+  }
+  if (key.includes('pattern')) {
+    return `${strengthText(strength)} from ${labelize(context.pattern || 'unclear')} pattern quality.`;
+  }
+  if (key.includes('liquidity')) {
+    return `${strengthText(strength)} from phase ${context.phase || '-'}, traded value ${formatMoney(metrics.value_10d_cr)} Cr, and supply checks.`;
+  }
+  if (key.includes('indicator')) {
+    return `${strengthText(strength)} from RSI ${formatNumber(metrics.rsi)}, MACD ${metrics.macd_crossover ? 'bullish' : 'not bullish'}, and EMA stack ${metrics.ema_stack || '-'}.`;
+  }
+  if (key.includes('fib') || key.includes('avwap')) {
+    return `${strengthText(strength)} because support/resistance levels are available around ${formatPriceList([...(levels.supports || []), ...(levels.resistances || [])].slice(0, 3))}.`;
+  }
+  if (key.includes('sweep')) {
+    return `${strengthText(strength)} after liquidity sweep risk and delivery quality checks.`;
+  }
+  if (key.includes('core_swing')) {
+    return `${strengthText(strength)} from combined weekly trend, breakout validity, indicators, and risk fit.`;
+  }
+
+  return `${strengthText(strength)} contribution from ${readable}.`;
+}
+
+function engineOneLine(model, matePro) {
+  const score = getModelScore(model);
+  const context = matePro.context || {};
+  const metrics = matePro.metrics || {};
+  const action = model.selection_action || matePro.trade_plans?.scanner_plan?.action || 'watch';
+  const base = score >= 80
+    ? 'score is high because trend, setup quality, and risk filters are aligned'
+    : score >= 65
+      ? 'score is constructive, but at least one filter still needs confirmation'
+      : score >= 50
+        ? 'score is mixed because the setup has promise but confirmation is incomplete'
+        : 'score is weak because multiple filters are not aligned';
+  const caution = [];
+
+  if (model.liquidity_gate === 'FAIL') caution.push('liquidity gate failed');
+  if ((model.penalty_reasons || []).length) caution.push(model.penalty_reasons[0]);
+  if ((metrics.sl_pct ?? 0) > 5) caution.push('risk is wide');
+  if (context.overhead_supply === 'heavy') caution.push('overhead supply is heavy');
+
+  return `${base}; action is ${action}${caution.length ? `, with caution: ${caution.join(', ')}` : ''}.`;
+}
+
+function finalView(matePro) {
+  const comp = matePro.composite || {};
+  const action = matePro.trade_plans?.scanner_plan?.action || '-';
+  return `${matePro.symbol || 'Stock'} has a ${comp.consensus_verdict || '-'} consensus with ${comp.composite_score ?? '-'} score; preferred action is ${action}.`;
+}
+
+function trendLabel(context, metrics) {
+  if (context.daily_bias === 'bullish' || metrics.ema_stack === 'bullish') return 'Bullish';
+  if (context.daily_bias === 'bearish') return 'Bearish';
+  return 'Neutral / Mixed';
+}
+
+function trendSummary(context, metrics, ta) {
+  if (metrics.ema_stack === 'bullish') {
+    return 'Price is trading with a bullish EMA stack, which supports an uptrend.';
+  }
+  if (ta?.ema_20 && ta?.ema_50 && ta?.cmp) {
+    const relation = ta.cmp > ta.ema_20 && ta.cmp > ta.ema_50 ? 'above' : 'below or mixed against';
+    return `Price is ${relation} the 20 and 50 EMAs, while daily structure is ${context.daily_structure || '-'}.`;
+  }
+  return `Daily structure is ${context.daily_structure || '-'} and weekly structure is ${context.weekly_structure || '-'}.`;
+}
+
+function patternSummary(context, levels) {
+  const pattern = labelize(context.pattern || 'unclear');
+  const trigger = formatMoney(levels.trigger);
+  if (context.pattern && context.pattern !== 'unclear') {
+    return `${pattern}: The setup is active. Confirmation improves on a sustained move above ${trigger} with stronger volume.`;
+  }
+  return `No dominant chart pattern is confirmed. A close above ${trigger} would improve breakout clarity.`;
+}
+
+function candleSummary(context, metrics, matePro) {
+  const action = matePro.trade_plans?.scanner_plan?.action;
+  if (action === 'TRADE') {
+    return 'Latest price action is acceptable for the scanner plan, provided the stop-loss remains respected.';
+  }
+  if (action === 'WAIT RETEST' || action === 'NO CHASE') {
+    return 'Latest price action is extended enough that the plan prefers a retest instead of chasing.';
+  }
+  return `Price quality is mixed; volatility is ${context.volatility_state || '-'} and risk is ${metrics.sl_pct ?? '-'}%.`;
+}
+
+function rsiSummary(rsi) {
+  if (rsi == null) return 'RSI data is not available.';
+  if (rsi >= 70) return `RSI is at ${formatNumber(rsi)}, which is strong but entering overbought territory.`;
+  if (rsi >= 60) return `RSI is at ${formatNumber(rsi)}, showing healthy bullish momentum.`;
+  if (rsi >= 45) return `RSI is at ${formatNumber(rsi)}, broadly neutral but useful for confirmation.`;
+  return `RSI is at ${formatNumber(rsi)}, showing weak momentum.`;
+}
+
+function bollingerSummary(ta) {
+  if (!ta?.bb_width) return 'Bollinger Band width is not available.';
+  if (ta.bb_width < 8) return `Band width is ${formatNumber(ta.bb_width)}%, suggesting volatility contraction.`;
+  if (ta.bb_width > 18) return `Band width is ${formatNumber(ta.bb_width)}%, suggesting elevated volatility.`;
+  return `Band width is ${formatNumber(ta.bb_width)}%, pointing to balanced volatility.`;
+}
+
+function movingAverageSummary(metrics, ta) {
+  if (metrics.ema_stack === 'bullish') return 'Price is aligned with a bullish EMA stack.';
+  const parts = [
+    ta?.ema_20 ? `20 EMA ${formatMoney(ta.ema_20)}` : null,
+    ta?.ema_50 ? `50 EMA ${formatMoney(ta.ema_50)}` : null,
+    ta?.ema_200 ? `200 EMA ${formatMoney(ta.ema_200)}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Moving-average data is not available.';
+}
+
+function getModelScore(model) {
+  const score = model.scanner_score ?? model.selection_total ?? model.final_probability ?? model.probability_pct ?? 0;
+  return formatNumber(score);
+}
+
+function componentRatio(comp) {
+  const max = Number(comp.max) || 0;
+  if (max <= 0) return 0;
+  return Math.max(0, Math.min(1, (Number(comp.score) || 0) / max));
+}
+
+function strengthText(strength) {
+  if (strength === 'strong') return 'Strong contribution';
+  if (strength === 'moderate') return 'Moderate contribution';
+  return 'Weak contribution';
+}
+
+function verdictTextClass(verdict) {
+  if (verdict === 'STRONG BUY') return 'text-emerald-300';
+  if (verdict === 'BUY') return 'text-green-300';
+  if (verdict === 'HOLD') return 'text-amber-300';
+  if (verdict === 'WAIT') return 'text-orange-300';
+  return 'text-red-300';
+}
+
+function labelize(value) {
+  return String(value || '-')
+    .replace(/^[A-Z]\d_/, '')
+    .replace(/^P\d_/, '')
+    .replace(/^S\d_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function formatNumber(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatMoney(value) {
+  if (value == null || Number.isNaN(Number(value))) return 'Rs -';
+  return `Rs ${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function formatPct(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-';
+  return `${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}%`;
+}
+
+function formatRange(values) {
+  if (!Array.isArray(values) || values.length < 2) return 'Not available';
+  return `${formatMoney(values[0])} to ${formatMoney(values[1])}`;
+}
+
+function formatPriceList(values) {
+  if (!Array.isArray(values) || values.length === 0) return 'Not available';
+  return values.map(formatMoney).join(', ');
+}
+
+function formatTimestamp(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function IndicatorCard({ title, items }) {
