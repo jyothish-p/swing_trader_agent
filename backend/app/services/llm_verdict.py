@@ -115,6 +115,7 @@ def _build_payload(
     titan: dict,
     swing_ai: dict,
     king: dict,
+    backtest: dict,
     composite: dict,
     trade_plans: dict,
     fallback_verdict: str,
@@ -168,6 +169,14 @@ def _build_payload(
             "titan": titan.get("verdict"),
             "swing_ai": swing_ai.get("verdict"),
             "king": king.get("verdict"),
+            "backtest": backtest.get("verdict"),
+        },
+        "backtest": {
+            "score": backtest.get("scanner_score"),
+            "quality_grade": backtest.get("quality_grade"),
+            "data_status": backtest.get("data_status"),
+            "sample_size": backtest.get("sample_size"),
+            "metrics": backtest.get("metrics"),
         },
     }
 
@@ -266,6 +275,7 @@ def generate_llm_one_line_verdict(
     titan: dict,
     swing_ai: dict,
     king: dict,
+    backtest: dict,
     composite: dict,
     trade_plans: dict,
     fallback_verdict: str,
@@ -274,7 +284,7 @@ def generate_llm_one_line_verdict(
     if provider is None:
         return fallback_verdict, "rules"
 
-    payload = _build_payload(symbol, raw, titan, swing_ai, king, composite, trade_plans, fallback_verdict)
+    payload = _build_payload(symbol, raw, titan, swing_ai, king, backtest, composite, trade_plans, fallback_verdict)
     if provider == "gemini":
         return _generate_gemini_one_line_verdict(symbol, payload, fallback_verdict)
     if provider == "openai":

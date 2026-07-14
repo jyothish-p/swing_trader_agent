@@ -195,7 +195,11 @@ def _payload_has_full_engine(payload: dict | None) -> bool:
     if not rows:
         return False
 
-    return all(bool((row.get("mate_pro") or {}).get("model_scores")) for row in rows)
+    required_keys = set(MODEL_WEIGHTS)
+    return all(
+        required_keys.issubset(set(((row.get("mate_pro") or {}).get("model_scores") or {}).keys()))
+        for row in rows
+    )
 
 
 def _summarize_mate_pro_rows(rows: list[dict]) -> dict | None:
@@ -273,6 +277,7 @@ def _ensure_complete_mate_pro_payload(db: Session, run_id: str, payload: dict) -
 def _mp_summary(mp: dict) -> dict:
     titan = (mp.get("models") or {}).get("titan") or {}
     titan_v19 = (mp.get("models") or {}).get("titan_v19") or {}
+    backtest = (mp.get("models") or {}).get("backtest") or {}
     return {
         "composite_score": mp["composite"]["composite_score"],
         "composite_probability": mp["composite"]["composite_probability"],
@@ -317,6 +322,15 @@ def _mp_summary(mp: dict) -> dict:
             "selection_grade": titan_v19.get("selection_grade"),
             "selection_action": titan_v19.get("selection_action"),
             "setup_family": titan_v19.get("setup_family"),
+        },
+        "backtest": {
+            "model": backtest.get("model"),
+            "backtest_score": backtest.get("backtest_score"),
+            "quality_grade": backtest.get("quality_grade"),
+            "data_status": backtest.get("data_status"),
+            "setup_family": backtest.get("setup_family"),
+            "sample_size": backtest.get("sample_size"),
+            "metrics": backtest.get("metrics"),
         },
     }
 

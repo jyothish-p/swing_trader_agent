@@ -100,6 +100,7 @@ def _snapshot_model(name: str, score: float | None, verdict: str | None) -> dict
 def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
     scores = mate_pro.get("model_scores") or {}
     verdicts = mate_pro.get("model_verdicts") or {}
+    backtest_summary = mate_pro.get("backtest") or {}
     trigger = mate_pro.get("trigger")
     stop_loss = mate_pro.get("stop_loss")
     targets = mate_pro.get("targets") or {}
@@ -171,6 +172,15 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
             "swing_ai_v12_2": _snapshot_model("Swing AI v12.2", scores.get("Swing_AI"), verdicts.get("Swing_AI")),
             "swing_ai_v12_1": _snapshot_model("Swing AI v12.1", scores.get("Swing_AI_Hyper"), verdicts.get("Swing_AI_Hyper")),
             "king": _snapshot_model("KING v16", scores.get("KING"), verdicts.get("KING")),
+            "backtest": {
+                **_snapshot_model("Backtest Engine", scores.get("BACKTEST"), verdicts.get("BACKTEST")),
+                "backtest_score": backtest_summary.get("backtest_score"),
+                "quality_grade": backtest_summary.get("quality_grade"),
+                "data_status": backtest_summary.get("data_status"),
+                "setup_family": backtest_summary.get("setup_family"),
+                "sample_size": backtest_summary.get("sample_size"),
+                "metrics": backtest_summary.get("metrics"),
+            },
         },
         "snapshot_source": "screener_run",
     })
@@ -206,6 +216,7 @@ def _apply_snapshot_mate_pro(result: dict, mate_pro: dict) -> dict:
         "swing_ai_v12_2": ("Swing_AI",),
         "swing_ai_v12_1": ("Swing_AI_Hyper",),
         "king": ("KING",),
+        "backtest": ("BACKTEST",),
     }
     scores = mate_pro.get("model_scores") or {}
     verdicts = mate_pro.get("model_verdicts") or {}
@@ -248,6 +259,7 @@ def _verdict_value(row: dict) -> str | None:
 def _mate_pro_snapshot_row(result: dict) -> dict:
     titan = (result.get("models") or {}).get("titan") or {}
     titan_v19 = (result.get("models") or {}).get("titan_v19") or {}
+    backtest = (result.get("models") or {}).get("backtest") or {}
     return {
         "composite_score": result["composite"]["composite_score"],
         "composite_probability": result["composite"]["composite_probability"],
@@ -292,6 +304,15 @@ def _mate_pro_snapshot_row(result: dict) -> dict:
             "selection_grade": titan_v19.get("selection_grade"),
             "selection_action": titan_v19.get("selection_action"),
             "setup_family": titan_v19.get("setup_family"),
+        },
+        "backtest": {
+            "model": backtest.get("model"),
+            "backtest_score": backtest.get("backtest_score"),
+            "quality_grade": backtest.get("quality_grade"),
+            "data_status": backtest.get("data_status"),
+            "setup_family": backtest.get("setup_family"),
+            "sample_size": backtest.get("sample_size"),
+            "metrics": backtest.get("metrics"),
         },
     }
 
@@ -509,7 +530,7 @@ def get_mate_pro_analysis(
     run_id: str = Query(None, description="Screener run ID. If supplied, align verdict with that dashboard run."),
     db: Session = Depends(get_db),
 ):
-    """Run all 3 MATE-PRO models on a stock."""
+    """Run all active MATE-PRO engines on a stock."""
     symbol = symbol.upper()
     snapshot_mate_pro = _snapshot_mate_pro(_load_run_snapshot(run_id, db), symbol) if run_id else None
 

@@ -171,6 +171,7 @@ function ActionRow({ s, index, runId }) {
   const swingAi = mp.model_scores?.Swing_AI;
   const swingAiHyper = mp.model_scores?.Swing_AI_Hyper;
   const king = mp.model_scores?.KING;
+  const backtest = mp.model_scores?.BACKTEST;
   const composite = mp.composite_score ?? s.composite_score;
   const verdict = mp.consensus_verdict ?? s.verdict;
   const probability = mp.composite_probability ?? s.probability;
@@ -220,6 +221,9 @@ function ActionRow({ s, index, runId }) {
       </td>
       <td className="px-2 py-3 align-top">
         {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-slate-600 text-xs">—</span>}
+      </td>
+      <td className="px-2 py-3 align-top">
+        {backtest != null ? <ScoreBar label="B" score={backtest} /> : <span className="text-slate-600 text-xs">-</span>}
       </td>
       <td className="px-2 py-3 align-top text-center whitespace-nowrap">
         {composite != null ? (
@@ -274,13 +278,13 @@ export default function ActionableTable({ stocks, runId, sortOrder = 'desc', onT
   return (
     <div className="space-y-4">
       <div className="mb-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-        <span>Actionable rows stay sorted by the same weighted composite.</span>
+        <span>Actionable rows stay sorted by the same equal-weight 6-engine composite.</span>
         <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-400">
           Scroll sideways on smaller screens
         </span>
       </div>
       <div className="overflow-x-auto rounded-lg border border-slate-700/70">
-        <table className="w-full min-w-[1220px] text-sm">
+        <table className="w-full min-w-[1320px] text-sm">
           <thead>
             <tr className="border-b border-slate-700 bg-slate-900/40 text-left text-[11px] uppercase tracking-wide text-slate-400">
               <th className="px-3 py-3 pr-2">#</th>
@@ -291,6 +295,7 @@ export default function ActionableTable({ stocks, runId, sortOrder = 'desc', onT
               <th className="px-2 py-3 text-center">Swing AI v12.2</th>
               <th className="px-2 py-3 text-center">Swing AI v12.1</th>
               <th className="px-2 py-3 text-center">KING v16</th>
+              <th className="px-2 py-3 text-center">Backtest</th>
               <th className="px-2 py-3 text-center">
                 <button
                   type="button"

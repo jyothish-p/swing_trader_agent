@@ -70,6 +70,7 @@ export default function StockDetail() {
   const ta = analysis?.analysis?.[timeframe] || analysis?.analysis?.daily || {};
   const chart = chartData?.chart_data || [];
   const modelEntries = orderedModelEntries(matePro?.models);
+  const engineCount = modelEntries.length || 6;
   const selectedEngine = selectedEngineKey ? matePro?.models?.[selectedEngineKey] : null;
   const sectorMomentum = matePro?.context?.sector_momentum_score ?? 0;
   const sectorMomentumTone = sectorMomentum >= 6
@@ -143,7 +144,7 @@ export default function StockDetail() {
               {/* Composite Verdict */}
               <div className="bg-slate-800 rounded-lg p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-white">5-Engine Consensus</h3>
+                  <h3 className="text-lg font-semibold text-white">{engineCount}-Engine Consensus</h3>
                   <span className={`text-sm font-mono px-2 py-0.5 rounded ${
                     matePro.composite.agreement === 'UNANIMOUS' ? 'bg-emerald-500/20 text-emerald-300' :
                     matePro.composite.agreement === 'MAJORITY' ? 'bg-amber-500/20 text-amber-300' :
@@ -714,6 +715,7 @@ const ENGINE_ORDER = [
   'swing_ai_v12_2',
   'swing_ai_v12_1',
   'king',
+  'backtest',
 ];
 
 function orderedModelEntries(models = {}) {
@@ -886,7 +888,7 @@ function buildStockReport(symbol, matePro, ta) {
     `- Timeframe analyzed: Daily primary with weekly/monthly context`,
     `- Overall trend: ${trendLabel(context, metrics)}`,
     `- Current price snapshot: ${formatMoney(matePro.cmp)}${matePro.timestamp ? ` as of ${formatTimestamp(matePro.timestamp)}` : ''}`,
-    `- Final model: 5-engine MATE-PRO consensus`,
+    `- Final model: ${orderedModelEntries(matePro.models).length || 6}-engine MATE-PRO consensus`,
     `- Final score: ${comp.composite_score ?? '-'} / 100`,
     `- Final verdict: ${comp.consensus_verdict || '-'} (${comp.agreement || 'agreement not available'})`,
     `- Trend summary: ${trendSummary(context, metrics, ta)}`,
@@ -981,6 +983,12 @@ function buildEngineReport(model, matePro) {
   if (model.sector_boost != null) lines.push(`- Sector boost: ${model.sector_boost} points.`);
   if (model.sector_boost_impact != null) lines.push(`- Sector boost impact: +${model.sector_boost_impact} probability points.`);
   if (model.backtest_score != null) lines.push(`- Backtest score: ${model.backtest_score}/20.`);
+  if (model.quality_grade) lines.push(`- Backtest grade: ${model.quality_grade}.`);
+  if (model.sample_size != null) lines.push(`- Historical sample size: ${model.sample_size} similar trades.`);
+  if (model.data_status) lines.push(`- Data status: ${model.data_status}.`);
+  if (model.metrics?.win_rate != null) {
+    lines.push(`- Historical metrics: win rate ${model.metrics.win_rate}%, avg R ${model.metrics.average_r_multiple ?? '-'}, false breakout ${model.metrics.false_breakout_rate ?? '-'}%.`);
+  }
   if (model.positional_score != null) lines.push(`- Positional read: ${model.positional_score}/${model.positional_max || 30}${model.positional_class ? ` (${model.positional_class})` : ''}.`);
 
   lines.push('', '### Verdict Reason');
@@ -1038,6 +1046,24 @@ function componentReason(key, comp, model, matePro) {
   }
   if (key.includes('core_swing')) {
     return `${strengthText(strength)} from combined weekly trend, breakout validity, indicators, and risk fit.`;
+  }
+  if (key.includes('sample_size')) {
+    return `${strengthText(strength)} from the number of similar historical signals found.`;
+  }
+  if (key.includes('win_rate')) {
+    return `${strengthText(strength)} from historical win rate for similar setups.`;
+  }
+  if (key.includes('average_r')) {
+    return `${strengthText(strength)} from average R multiple after cost assumptions.`;
+  }
+  if (key.includes('false_breakout')) {
+    return `${strengthText(strength)} from the historical false breakout rate.`;
+  }
+  if (key.includes('recent_performance')) {
+    return `${strengthText(strength)} from the last six months of matched trades.`;
+  }
+  if (key.includes('stability')) {
+    return `${strengthText(strength)} from whether the setup held up with sector and market confirmation.`;
   }
 
   return `${strengthText(strength)} contribution from ${readable}.`;

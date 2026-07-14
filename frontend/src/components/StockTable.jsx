@@ -268,13 +268,13 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
   return (
     <div>
       <div className="mb-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-        <span>Showing the full 5-engine view for each screened stock. Live quotes refresh every 15 seconds.</span>
+        <span>Showing the full 6-engine view for each screened stock. Live quotes refresh every 15 seconds.</span>
         <span className="rounded-full border border-sky-400/20 bg-sky-500/5 px-3 py-1 text-[11px] text-sky-300">
           Scroll sideways on smaller screens
         </span>
       </div>
       <div className="overflow-x-auto rounded-2xl border border-white/10 bg-[#081225]/80 shadow-inner shadow-black/30">
-        <table className="w-full min-w-[1080px] text-sm">
+        <table className="w-full min-w-[1180px] text-sm">
           <thead>
             <tr className="border-b border-white/10 bg-slate-950/70 text-left text-[11px] uppercase tracking-wide text-slate-300">
               <th className="px-3 py-4 pr-2">Rank</th>
@@ -285,6 +285,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
               <th className="px-2 py-3 text-center">Swing AI v12.2</th>
               <th className="px-2 py-3 text-center">Swing AI v12.1</th>
               <th className="px-2 py-3 text-center">KING v16</th>
+              <th className="px-2 py-3 text-center">Backtest</th>
               <th className="px-2 py-3 text-center">
                 <button
                   type="button"
@@ -308,6 +309,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
               const swingAi = matePro?.model_scores?.Swing_AI;
               const swingAiHyper = matePro?.model_scores?.Swing_AI_Hyper;
               const king = matePro?.model_scores?.KING;
+              const backtest = matePro?.model_scores?.BACKTEST;
               const composite = matePro?.composite_score ?? stock.composite_score;
               const titanMeta = matePro?.titan_v20 || matePro?.titan_v19;
               const placeholder = '-';
@@ -365,6 +367,9 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
                   </td>
                   <td className="px-2 py-3 align-top">
                     {king != null ? <ScoreBar label="K" score={king} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
+                  </td>
+                  <td className="px-2 py-3 align-top">
+                    {backtest != null ? <ScoreBar label="B" score={backtest} /> : <span className="text-xs text-slate-600">{placeholder}</span>}
                   </td>
                   <td className="whitespace-nowrap px-2 py-3 text-center">
                     {composite != null ? (

@@ -1,9 +1,12 @@
 """
 MATE-PRO Scoring Engine.
-Implements all 3 MATE-PRO models as mechanical scoring systems:
-  1. TITAN v19 — Swing insight engine (100pt selection + v19 confluence)
-  2. Swing AI v14 — 100-point selection scanner + 40-point swing engine
-  3. KING v16 — Combined scanner + pattern engine + smart money + backtest
+Implements the active MATE-PRO engines as mechanical scoring systems:
+  1. TITAN v20
+  2. TITAN v19
+  3. Swing AI v12.2
+  4. Swing AI v12.1
+  5. KING v16
+  6. Backtest Engine
 
 Each model takes the same raw technical data from our analysis engine and
 applies its own scoring formula to produce scores, verdicts, and trade plans.
@@ -551,13 +554,16 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
     }
 
 
-MODEL_WEIGHTS = {
-    "TITAN": 0.20,
-    "TITAN_v19": 0.20,
-    "Swing_AI": 0.20,
-    "Swing_AI_Hyper": 0.20,
-    "KING": 0.20,
-}
+ACTIVE_ENGINE_KEYS = (
+    "TITAN",
+    "TITAN_v19",
+    "Swing_AI",
+    "Swing_AI_Hyper",
+    "KING",
+    "BACKTEST",
+)
+
+MODEL_WEIGHTS = {key: 1 / len(ACTIVE_ENGINE_KEYS) for key in ACTIVE_ENGINE_KEYS}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -2103,6 +2109,450 @@ def _score_king(data: dict) -> dict:
 # TRADE PLAN GENERATOR
 # ─────────────────────────────────────────────────
 
+def _backtest_setup_family(pattern_name: str | None) -> str:
+    if pattern_name in ("pullback_ema20", "bull_flag"):
+        return "Pullback Continuation"
+    if pattern_name in ("base_breakout", "vcp", "box", "ascending_triangle", "cup_handle"):
+        return "Clean Base Breakout"
+    if pattern_name in ("trendline_break", "rounding_bottom"):
+        return "Breakout Retest"
+    return "Clean Base Breakout"
+
+
+def _backtest_rsi_zone(rsi: float | None) -> str:
+    rsi = rsi or 50
+    if rsi >= 65:
+        return "strong"
+    if rsi >= 55:
+        return "constructive"
+    if rsi >= 45:
+        return "neutral"
+    return "weak"
+
+
+def _backtest_ema_structure(row: pd.Series) -> str:
+    ema20 = row.get("ema20")
+    ema50 = row.get("ema50")
+    ema200 = row.get("ema200")
+    close = row.get("close")
+    if pd.notna(ema20) and pd.notna(ema50) and pd.notna(ema200) and ema20 > ema50 > ema200 and close > ema20:
+        return "bullish"
+    if pd.notna(ema20) and pd.notna(ema50) and ema20 > ema50 and close > ema20:
+        return "constructive"
+    if pd.notna(ema20) and close >= ema20:
+        return "mixed"
+    return "weak"
+
+
+def _backtest_volume_condition(vol_ratio: float | None) -> str:
+    vol_ratio = vol_ratio or 0
+    if vol_ratio >= 1.5:
+        return "surge"
+    if vol_ratio >= 1.0:
+        return "normal"
+    return "weak"
+
+
+def _backtest_prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
+    frame = df.copy().reset_index(drop=True)
+    for col in ("open", "high", "low", "close", "volume"):
+        frame[col] = frame[col].astype(float)
+
+    close = frame["close"]
+    high = frame["high"]
+    low = frame["low"]
+    volume = frame["volume"]
+    prev_close = close.shift(1)
+    true_range = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    frame["ema20"] = close.ewm(span=20, adjust=False).mean()
+    frame["ema50"] = close.ewm(span=50, adjust=False).mean()
+    frame["ema100"] = close.ewm(span=100, adjust=False).mean()
+    frame["ema200"] = close.ewm(span=200, adjust=False).mean()
+    frame["rsi14"] = _calc_rsi(close, 14)
+    macd = _calc_macd(close, 12, 26, 9)
+    frame["macd"] = macd["macd"]
+    frame["macd_signal"] = macd["signal"]
+    bb = _calc_bollinger(close, 20, 2)
+    frame["bb_middle"] = bb["middle"]
+    frame["bb_upper"] = bb["upper"]
+    frame["bb_lower"] = bb["lower"]
+    frame["atr14"] = true_range.rolling(14, min_periods=5).mean()
+    frame["avg_vol20"] = volume.rolling(20, min_periods=5).mean()
+    frame["vol_ratio"] = volume / frame["avg_vol20"].replace(0, np.nan)
+    frame["high_52w"] = high.rolling(252, min_periods=60).max()
+    frame["pct_from_52w"] = (close / frame["high_52w"] - 1) * 100
+    return frame
+
+
+def _backtest_signal_family(frame: pd.DataFrame, idx: int) -> str | None:
+    row = frame.iloc[idx]
+    prior_20 = frame.iloc[idx - 20:idx]
+    if prior_20.empty:
+        return None
+
+    close = row["close"]
+    open_ = row["open"]
+    high = row["high"]
+    low = row["low"]
+    ema20 = row.get("ema20")
+    ema50 = row.get("ema50")
+    vol_ratio = row.get("vol_ratio") or 0
+    prior_high = prior_20["high"].max()
+    candle_range = max(high - low, 0.01)
+    close_quality = (close - low) / candle_range
+
+    if close > prior_high and vol_ratio >= 1.0 and close_quality >= 0.55 and close <= prior_high * 1.05:
+        return "Clean Base Breakout"
+
+    if (
+        pd.notna(ema20)
+        and pd.notna(ema50)
+        and close > ema20 >= ema50
+        and low <= ema20 * 1.02
+        and close > open_
+        and vol_ratio >= 0.8
+    ):
+        return "Pullback Continuation"
+
+    breakout_levels = []
+    for lookback_idx in range(max(20, idx - 15), idx):
+        previous = frame.iloc[lookback_idx - 20:lookback_idx]
+        if previous.empty:
+            continue
+        level = previous["high"].max()
+        if frame.iloc[lookback_idx]["close"] > level:
+            breakout_levels.append(level)
+
+    if breakout_levels:
+        level = breakout_levels[-1]
+        if low <= level * 1.02 and close >= level * 0.99 and close > open_:
+            return "Breakout Retest"
+
+    return None
+
+
+def _backtest_current_features(data: dict) -> dict:
+    current_row = pd.Series({
+        "close": data.get("cmp"),
+        "ema20": data.get("ema_20"),
+        "ema50": data.get("ema_50"),
+        "ema200": data.get("ema_200"),
+    })
+    return {
+        "family": _backtest_setup_family(data.get("pattern_name")),
+        "rsi_zone": _backtest_rsi_zone(data.get("rsi")),
+        "ema_structure": _backtest_ema_structure(current_row),
+        "volume_condition": _backtest_volume_condition(data.get("vol_ratio")),
+        "atr_pct": data.get("atr_pct") or 0,
+        "pct_from_52w": data.get("pct_from_52w") or -100,
+    }
+
+
+def _backtest_is_similar_setup(row: pd.Series, family: str, current: dict) -> bool:
+    if family != current["family"]:
+        return False
+    if _backtest_rsi_zone(row.get("rsi14")) != current["rsi_zone"]:
+        return False
+
+    current_structure = current["ema_structure"]
+    row_structure = _backtest_ema_structure(row)
+    if current_structure in ("bullish", "constructive") and row_structure not in ("bullish", "constructive"):
+        return False
+    if current_structure in ("mixed", "weak") and row_structure == "weak" and current_structure != "weak":
+        return False
+
+    current_volume = current["volume_condition"]
+    row_volume = _backtest_volume_condition(row.get("vol_ratio"))
+    if current_volume == "surge" and row_volume != "surge":
+        return False
+    if current_volume == "normal" and row_volume == "weak":
+        return False
+
+    atr_value = row.get("atr14")
+    atr_pct = float(atr_value) / row["close"] * 100 if pd.notna(atr_value) and row["close"] else 0
+    current_atr = current["atr_pct"]
+    if current_atr and abs(atr_pct - current_atr) > max(2.0, current_atr * 0.7):
+        return False
+
+    pct_from_52w = row.get("pct_from_52w")
+    if pd.notna(pct_from_52w) and abs(pct_from_52w - current["pct_from_52w"]) > 10:
+        return False
+
+    return True
+
+
+def _backtest_simulate_trade(frame: pd.DataFrame, idx: int, family: str) -> dict | None:
+    entry_row = frame.iloc[idx]
+    entry = float(entry_row["close"])
+    if entry <= 0:
+        return None
+
+    prior_20 = frame.iloc[idx - 20:idx]
+    prior_10 = frame.iloc[idx - 10:idx]
+    trigger = float(prior_20["high"].max()) if not prior_20.empty else entry
+    atr_value = entry_row.get("atr14")
+    atr = float(atr_value) if pd.notna(atr_value) and atr_value > 0 else entry * 0.025
+    support_stop = float(prior_10["low"].min()) if not prior_10.empty else entry - atr
+    stop_loss = max(support_stop, entry * 0.95, entry - 1.5 * atr)
+    stop_loss = min(stop_loss, entry * 0.995)
+    risk_pct = max((entry - stop_loss) / entry * 100, 0.5)
+
+    t1 = entry * 1.08
+    t2 = entry * 1.12
+    t3 = entry * 1.15
+    max_target_hit = 0
+    max_drawdown = 0.0
+    exit_price = None
+    exit_reason = "TIME"
+    holding_days = 20
+    horizon = frame.iloc[idx + 1:min(len(frame), idx + 21)]
+    if len(horizon) < 5:
+        return None
+
+    for day_count, (_, row) in enumerate(horizon.iterrows(), start=1):
+        low = float(row["low"])
+        high = float(row["high"])
+        close = float(row["close"])
+        max_drawdown = min(max_drawdown, (low / entry - 1) * 100)
+
+        if low <= stop_loss:
+            exit_price = stop_loss
+            exit_reason = "SL"
+            holding_days = day_count
+            break
+        if high >= t3:
+            max_target_hit = 3
+            exit_price = t3
+            exit_reason = "T3"
+            holding_days = day_count
+            break
+        if high >= t2:
+            max_target_hit = max(max_target_hit, 2)
+        elif high >= t1:
+            max_target_hit = max(max_target_hit, 1)
+        if close < stop_loss:
+            exit_price = close
+            exit_reason = "FAILURE"
+            holding_days = day_count
+            break
+
+    if exit_price is None:
+        final_row = horizon.iloc[-1]
+        if max_target_hit == 2:
+            exit_price = t2
+            exit_reason = "T2"
+        elif max_target_hit == 1:
+            exit_price = t1
+            exit_reason = "T1"
+        else:
+            exit_price = float(final_row["close"])
+        holding_days = len(horizon)
+
+    net_return_pct = ((exit_price / entry - 1) * 100) - 0.50
+    r_multiple = net_return_pct / risk_pct if risk_pct > 0 else 0
+    false_breakout = exit_reason in ("SL", "FAILURE") or (max_target_hit == 0 and net_return_pct <= 0)
+
+    return {
+        "date": str(entry_row.get("date")),
+        "family": family,
+        "entry": round(entry, 2),
+        "trigger": round(trigger, 2),
+        "stop_loss": round(stop_loss, 2),
+        "net_return_pct": net_return_pct,
+        "r_multiple": r_multiple,
+        "target_hit": max_target_hit,
+        "sl_hit": exit_reason == "SL",
+        "false_breakout": false_breakout,
+        "holding_days": holding_days,
+        "max_drawdown_pct": max_drawdown,
+        "retest_success": family == "Breakout Retest" and max_target_hit >= 1,
+    }
+
+
+def _score_backtest_engine(data: dict) -> dict:
+    """Score the current setup using no-lookahead historical setup validation."""
+    raw_df = data.get("candles_df")
+    empty_components = {
+        "B1_sample_size": {"score": 0, "max": 4},
+        "B2_win_rate": {"score": 0, "max": 4},
+        "B3_average_r": {"score": 0, "max": 4},
+        "B4_false_breakout": {"score": 0, "max": 3},
+        "B5_recent_performance": {"score": 0, "max": 3},
+        "B6_stability": {"score": 0, "max": 2},
+    }
+    if raw_df is None or raw_df.empty:
+        return {
+            "model": "Backtest Engine",
+            "scanner_score": 0,
+            "backtest_score": 0,
+            "quality_grade": "Poor",
+            "data_status": "BACKTEST DATA INCOMPLETE",
+            "penalties": 20,
+            "penalty_reasons": ["Historical OHLCV unavailable"],
+            "components": empty_components,
+            "probability_pct": 0,
+            "verdict": "AVOID",
+        }
+
+    frame = _backtest_prepare_frame(raw_df)
+    current = _backtest_current_features(data)
+    min_idx = 252 if len(frame) >= 280 else 80
+    trades = []
+
+    for idx in range(min_idx, max(min_idx, len(frame) - 20)):
+        family = _backtest_signal_family(frame, idx)
+        if not family:
+            continue
+        row = frame.iloc[idx]
+        if not _backtest_is_similar_setup(row, family, current):
+            continue
+        trade = _backtest_simulate_trade(frame, idx, family)
+        if trade:
+            trades.append(trade)
+
+    sample_size = len(trades)
+    data_incomplete = len(frame) < 252
+
+    if sample_size:
+        returns = [trade["net_return_pct"] for trade in trades]
+        r_values = [trade["r_multiple"] for trade in trades]
+        wins = [value for value in returns if value > 0]
+        losses = [value for value in returns if value <= 0]
+        win_rate = len(wins) / sample_size * 100
+        t1_rate = len([trade for trade in trades if trade["target_hit"] >= 1]) / sample_size * 100
+        t2_rate = len([trade for trade in trades if trade["target_hit"] >= 2]) / sample_size * 100
+        t3_rate = len([trade for trade in trades if trade["target_hit"] >= 3]) / sample_size * 100
+        sl_rate = len([trade for trade in trades if trade["sl_hit"]]) / sample_size * 100
+        false_breakout_rate = len([trade for trade in trades if trade["false_breakout"]]) / sample_size * 100
+        retest_trades = [trade for trade in trades if trade["family"] == "Breakout Retest"]
+        retest_success_rate = (
+            len([trade for trade in retest_trades if trade["retest_success"]]) / len(retest_trades) * 100
+            if retest_trades else None
+        )
+        avg_gain = float(np.mean(wins)) if wins else 0.0
+        avg_loss = float(np.mean(losses)) if losses else 0.0
+        avg_r = float(np.mean(r_values)) if r_values else 0.0
+        median_r = float(np.median(r_values)) if r_values else 0.0
+        best_trade = max(returns)
+        worst_trade = min(returns)
+        max_drawdown = min(trade["max_drawdown_pct"] for trade in trades)
+        avg_holding = float(np.mean([trade["holding_days"] for trade in trades]))
+        expectancy = avg_r
+        last_date = pd.to_datetime(frame.iloc[-1]["date"])
+        recent_trades = [
+            trade for trade in trades
+            if (last_date - pd.to_datetime(trade["date"])).days <= 183
+        ]
+        recent_avg_r = float(np.mean([trade["r_multiple"] for trade in recent_trades])) if recent_trades else None
+    else:
+        win_rate = t1_rate = t2_rate = t3_rate = sl_rate = false_breakout_rate = 0.0
+        retest_success_rate = None
+        avg_gain = avg_loss = avg_r = median_r = best_trade = worst_trade = max_drawdown = avg_holding = expectancy = 0.0
+        recent_avg_r = None
+
+    sample_points = 4 if sample_size >= 20 else 3 if sample_size >= 10 else 2 if sample_size >= 5 else 0
+    win_points = 4 if win_rate >= 60 else 3 if win_rate >= 50 else 1 if win_rate >= 40 else 0
+    avg_r_points = 4 if avg_r >= 2.0 else 3 if avg_r >= 1.5 else 2 if avg_r >= 1.0 else 0
+    false_breakout_points = 3 if false_breakout_rate < 25 else 2 if false_breakout_rate <= 40 else 0
+    if recent_avg_r is None:
+        recent_points = 1 if sample_size >= 5 else 0
+        recent_label = "mixed"
+    elif recent_avg_r > 0.25:
+        recent_points = 3
+        recent_label = "positive"
+    elif recent_avg_r >= -0.25:
+        recent_points = 1
+        recent_label = "mixed"
+    else:
+        recent_points = 0
+        recent_label = "negative"
+
+    sector_confirmed = (data.get("sector_momentum_score") or 0) >= 3 and data.get("nifty_trend_state") != "bearish"
+    stability_points = 2 if sample_size >= 10 and sector_confirmed and false_breakout_rate <= 40 else 0
+    backtest_score = sample_points + win_points + avg_r_points + false_breakout_points + recent_points + stability_points
+    base_score = round(backtest_score * 5, 1)
+
+    penalties = 0
+    penalty_reasons = []
+    if data_incomplete:
+        penalties += 10
+        penalty_reasons.append("BACKTEST DATA INCOMPLETE: less than 1 year of daily OHLCV")
+    if sample_size < 5:
+        penalties += 10
+        penalty_reasons.append("Fewer than 5 similar historical trades")
+
+    final_score = round(max(0, base_score - penalties), 1)
+    if backtest_score >= 17:
+        grade = "Excellent"
+    elif backtest_score >= 13:
+        grade = "Good"
+    elif backtest_score >= 9:
+        grade = "Average"
+    elif backtest_score >= 5:
+        grade = "Weak"
+    else:
+        grade = "Poor"
+
+    if backtest_score >= 17 and penalties == 0:
+        verdict = "STRONG BUY"
+    elif backtest_score >= 13 and penalties <= 10:
+        verdict = "BUY"
+    elif backtest_score >= 9:
+        verdict = "HOLD"
+    elif backtest_score >= 5:
+        verdict = "WAIT"
+    else:
+        verdict = "AVOID"
+
+    return _to_python({
+        "model": "Backtest Engine",
+        "scanner_score": final_score,
+        "scanner_raw": base_score,
+        "backtest_score": backtest_score,
+        "quality_grade": grade,
+        "data_status": "BACKTEST DATA INCOMPLETE" if data_incomplete else "OK",
+        "setup_family": current["family"],
+        "sample_size": sample_size,
+        "metrics": {
+            "number_of_historical_signals": sample_size,
+            "win_rate": round(win_rate, 1),
+            "t1_hit_rate": round(t1_rate, 1),
+            "t2_hit_rate": round(t2_rate, 1),
+            "t3_hit_rate": round(t3_rate, 1),
+            "sl_hit_rate": round(sl_rate, 1),
+            "average_gain": round(avg_gain, 2),
+            "average_loss": round(avg_loss, 2),
+            "average_r_multiple": round(avg_r, 2),
+            "median_r_multiple": round(median_r, 2),
+            "best_trade": round(best_trade, 2),
+            "worst_trade": round(worst_trade, 2),
+            "maximum_drawdown_during_trade": round(max_drawdown, 2),
+            "average_holding_period": round(avg_holding, 1),
+            "false_breakout_rate": round(false_breakout_rate, 1),
+            "retest_success_rate": round(retest_success_rate, 1) if retest_success_rate is not None else None,
+            "expectancy_per_trade": round(expectancy, 2),
+            "recent_6m_performance": recent_label,
+        },
+        "components": {
+            "B1_sample_size": {"score": sample_points, "max": 4},
+            "B2_win_rate": {"score": win_points, "max": 4},
+            "B3_average_r": {"score": avg_r_points, "max": 4},
+            "B4_false_breakout": {"score": false_breakout_points, "max": 3},
+            "B5_recent_performance": {"score": recent_points, "max": 3},
+            "B6_stability": {"score": stability_points, "max": 2},
+        },
+        "penalties": penalties,
+        "penalty_reasons": penalty_reasons,
+        "probability_pct": final_score,
+        "verdict": verdict,
+    })
+
+
 def _generate_trade_plan(data: dict) -> dict:
     """Generate trade plans (scanner + positional) from raw data."""
     cmp = data["cmp"]
@@ -2202,6 +2652,7 @@ def _generate_one_line_verdict(
     titan: dict,
     swing_ai: dict,
     king: dict,
+    backtest: dict,
     composite: dict,
     trade_plans: dict,
 ) -> str:
@@ -2259,6 +2710,10 @@ def _generate_one_line_verdict(
 
     if titan.get("liquidity_gate") == "FAIL":
         caution_bits.append("liquidity gate is not clean")
+    if backtest.get("data_status") == "BACKTEST DATA INCOMPLETE":
+        caution_bits.append("backtest data is incomplete")
+    elif backtest.get("quality_grade") in ("Weak", "Poor"):
+        caution_bits.append("historical edge is weak")
 
     lead = setup_bits[0] if setup_bits else f"is rated {verdict.lower()}"
     second = setup_bits[1] if len(setup_bits) > 1 else None
@@ -2323,17 +2778,18 @@ def _generate_one_line_verdict(
 
 
 # ─────────────────────────────────────────────────
-# COMPOSITE ACROSS ALL 3 MODELS
+# COMPOSITE ACROSS ALL ACTIVE ENGINES
 # ─────────────────────────────────────────────────
 
 def _compute_composite(models: dict[str, dict]) -> dict:
-    """Compute the weighted composite across TITAN v20, TITAN v19, both Swing AI engines, and KING."""
+    """Compute the equal-weight composite across every active engine."""
     score_map = {
         "TITAN": models["titan"]["scanner_score"],
         "TITAN_v19": models["titan_v19"]["scanner_score"],
         "Swing_AI": models["swing_ai_v12_2"]["selection_total"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["selection_total"],
         "KING": models["king"]["scanner_score"],
+        "BACKTEST": models["backtest"]["scanner_score"],
     }
     probability_map = {
         "TITAN": models["titan"]["probability_pct"],
@@ -2341,6 +2797,7 @@ def _compute_composite(models: dict[str, dict]) -> dict:
         "Swing_AI": models["swing_ai_v12_2"]["final_probability"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["final_probability"],
         "KING": models["king"]["probability_pct"],
+        "BACKTEST": models["backtest"]["probability_pct"],
     }
     verdict_map = {
         "TITAN": models["titan"]["verdict"],
@@ -2348,6 +2805,7 @@ def _compute_composite(models: dict[str, dict]) -> dict:
         "Swing_AI": models["swing_ai_v12_2"]["verdict"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["verdict"],
         "KING": models["king"]["verdict"],
+        "BACKTEST": models["backtest"]["verdict"],
     }
 
     composite_score = round(sum(score_map[key] * MODEL_WEIGHTS[key] for key in MODEL_WEIGHTS), 1)
@@ -2377,7 +2835,7 @@ def _compute_composite(models: dict[str, dict]) -> dict:
     unique_verdicts = len(set(verdict_map.values()))
     if unique_verdicts == 1:
         agreement = "UNANIMOUS"
-    elif len([v for v in verdict_map.values() if v == consensus_verdict]) >= 3:
+    elif len([v for v in verdict_map.values() if v == consensus_verdict]) >= (len(verdict_map) // 2 + 1):
         agreement = "MAJORITY"
     else:
         agreement = "SPLIT"
@@ -2413,7 +2871,7 @@ def run_mate_pro_analysis(
     allow_llm_verdict: bool = True,
 ) -> dict | None:
     """
-    Run all 3 MATE-PRO models on a stock and return comprehensive results.
+    Run all active MATE-PRO engines on a stock and return comprehensive results.
     Returns None if insufficient data.
     """
     logger.info(f"Running MATE-PRO analysis for {symbol}...")
@@ -2430,6 +2888,7 @@ def run_mate_pro_analysis(
     swing_ai = _score_swing_ai_v12_2(raw)
     swing_ai_hyper = _score_swing_ai_v12_1(raw)
     king = _score_king(raw)
+    backtest = _score_backtest_engine(raw)
 
     # Generate trade plans
     trade_plans = _generate_trade_plan(raw)
@@ -2441,8 +2900,9 @@ def run_mate_pro_analysis(
         "swing_ai_v12_2": swing_ai,
         "swing_ai_v12_1": swing_ai_hyper,
         "king": king,
+        "backtest": backtest,
     })
-    fallback_one_line_verdict = _generate_one_line_verdict(symbol, raw, titan, swing_ai, king, composite, trade_plans)
+    fallback_one_line_verdict = _generate_one_line_verdict(symbol, raw, titan, swing_ai, king, backtest, composite, trade_plans)
     if allow_llm_verdict:
         one_line_verdict, one_line_verdict_source = generate_llm_one_line_verdict(
             symbol,
@@ -2450,6 +2910,7 @@ def run_mate_pro_analysis(
             titan,
             swing_ai,
             king,
+            backtest,
             composite,
             trade_plans,
             fallback_one_line_verdict,
@@ -2530,6 +2991,7 @@ def run_mate_pro_analysis(
             "swing_ai_v12_2": swing_ai,
             "swing_ai_v12_1": swing_ai_hyper,
             "king": king,
+            "backtest": backtest,
         },
 
         # Composite
@@ -2635,7 +3097,7 @@ def extract_actionable(mate_pro_results: list[dict], top_n: int = 20) -> list[di
             # Build human-readable reason
             reasons = []
             if comp["agreement"] == "UNANIMOUS":
-                reasons.append("All 5 engines agree")
+                reasons.append(f"All {len(ACTIVE_ENGINE_KEYS)} engines agree")
             elif comp["agreement"] == "MAJORITY":
                 reasons.append("Most weighted engines agree")
             phase = context.get("phase", "")
