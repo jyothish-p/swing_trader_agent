@@ -14,10 +14,11 @@ applies its own scoring formula to produce scores, verdicts, and trade plans.
 import logging
 import numpy as np
 import pandas as pd
+import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from app.models import DailyCandle, Stock
+from app.models import DailyCandle, DeliveryData, Stock
 from app.services.llm_verdict import generate_llm_one_line_verdict
 from app.services.market_context import (
     build_market_context,
@@ -60,15 +61,140 @@ def _to_python(obj):
 # RAW DATA EXTRACTION
 # ─────────────────────────────────────────────────
 
+BACKTEST_LOOKBACK_DAYS = 5 * 365 + 10
+BACKTEST_MIN_DAILY_BARS = 252
+BACKTEST_IDEAL_DAILY_BARS = 756
+_YF_HISTORY_CACHE: dict[str, pd.DataFrame] = {}
+
+
+def _candles_to_frame(candles: list[DailyCandle]) -> pd.DataFrame:
+    if not candles:
+        return pd.DataFrame()
+    return pd.DataFrame([{
+        "date": c.date,
+        "open": c.open,
+        "high": c.high,
+        "low": c.low,
+        "close": c.close,
+        "volume": c.volume,
+        "adj_close": c.adj_close,
+    } for c in candles])
+
+
+def _delivery_rows_to_frame(rows: list[DeliveryData]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame([{
+        "date": row.date,
+        "delivery_pct": row.delivery_pct,
+        "delivery_volume": row.delivery_volume,
+        "traded_volume": row.traded_volume,
+    } for row in rows]).sort_values("date").reset_index(drop=True)
+
+
+def _fetch_yf_history(symbol: str, years: int = 5) -> pd.DataFrame:
+    cache_key = f"{symbol}|{years}"
+    if cache_key in _YF_HISTORY_CACHE:
+        return _YF_HISTORY_CACHE[cache_key].copy()
+
+    try:
+        data = yf.download(
+            symbol,
+            period=f"{years}y",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if data.empty:
+            frame = pd.DataFrame()
+        else:
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(-1)
+            frame = data.reset_index()
+            frame.columns = [str(col).lower().replace(" ", "_") for col in frame.columns]
+            if "date" not in frame.columns and "datetime" in frame.columns:
+                frame = frame.rename(columns={"datetime": "date"})
+            keep = [col for col in ("date", "open", "high", "low", "close", "volume") if col in frame.columns]
+            frame = frame[keep].dropna(subset=["close"]).reset_index(drop=True)
+        _YF_HISTORY_CACHE[cache_key] = frame.copy()
+        return frame
+    except Exception as exc:
+        logger.warning("Failed to fetch index history for %s: %s", symbol, exc)
+        _YF_HISTORY_CACHE[cache_key] = pd.DataFrame()
+        return pd.DataFrame()
+
+
+def _peer_candle_frames(
+    db: Session,
+    symbol: str,
+    sector: str,
+    target_turnover_cr: float,
+    target_atr_pct: float,
+) -> list[dict]:
+    if not sector or sector == "DATA NOT PROVIDED":
+        return []
+
+    start_date = datetime.now().date() - timedelta(days=BACKTEST_LOOKBACK_DAYS)
+    peers = db.query(Stock).filter(
+        Stock.sector == sector,
+        Stock.symbol != symbol,
+        Stock.is_active == True,  # noqa: E712
+    ).limit(40).all()
+    peer_symbols = [peer.symbol for peer in peers if peer.symbol]
+    if not peer_symbols:
+        return []
+
+    rows = db.query(DailyCandle).filter(
+        DailyCandle.symbol.in_(peer_symbols),
+        DailyCandle.date >= start_date,
+    ).order_by(DailyCandle.symbol, DailyCandle.date).all()
+
+    grouped: dict[str, list[DailyCandle]] = {}
+    for row in rows:
+        grouped.setdefault(row.symbol, []).append(row)
+
+    frames = []
+    for peer_symbol, peer_rows in grouped.items():
+        if len(peer_rows) < BACKTEST_MIN_DAILY_BARS:
+            continue
+        frame = _candles_to_frame(peer_rows)
+        closes = frame["close"].astype(float)
+        highs = frame["high"].astype(float)
+        lows = frame["low"].astype(float)
+        volumes = frame["volume"].astype(float)
+        avg_turnover = float((closes.tail(20) * volumes.tail(20)).mean() / 1e7) if len(frame) >= 20 else 0
+        tr = pd.concat([
+            highs - lows,
+            (highs - closes.shift(1)).abs(),
+            (lows - closes.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        peer_atr_pct = float(tr.tail(14).mean() / closes.iloc[-1] * 100) if len(frame) >= 20 and closes.iloc[-1] else 0
+        liquidity_ok = target_turnover_cr <= 0 or 0.35 * target_turnover_cr <= avg_turnover <= 3.0 * target_turnover_cr
+        volatility_ok = target_atr_pct <= 0 or abs(peer_atr_pct - target_atr_pct) <= max(2.5, target_atr_pct * 0.75)
+        if liquidity_ok and volatility_ok:
+            frames.append({
+                "symbol": peer_symbol,
+                "frame": frame,
+                "avg_turnover_cr": round(avg_turnover, 2),
+                "atr_pct": round(peer_atr_pct, 2),
+            })
+        if len(frames) >= 12:
+            break
+    return frames
+
+
 def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | None:
     """
     Extract all raw technical data needed by the 3 scoring models.
     Returns a comprehensive dict of metrics, or None if insufficient data.
     """
-    # Get daily candles (1 year)
+    lookback_days = 400 if mode == "batch" else 5 * 365 + 10
+
+    # Get daily candles. Full mode uses deep history for the Backtest Engine.
     candles = db.query(DailyCandle).filter(
         DailyCandle.symbol == symbol,
-        DailyCandle.date >= datetime.now().date() - timedelta(days=400),
+        DailyCandle.date >= datetime.now().date() - timedelta(days=lookback_days),
     ).order_by(DailyCandle.date).all()
 
     min_candles = 10 if mode == "batch" else 50
@@ -435,6 +561,35 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
         mode=mode,
     )
 
+    if mode == "batch":
+        backtest_inputs = {
+            "delivery_df": pd.DataFrame(),
+            "peer_candles": [],
+            "nifty_df": pd.DataFrame(),
+            "sector_index_df": pd.DataFrame(),
+            "backtest_data_notes": ["Backtest side data skipped in batch mode"],
+        }
+    else:
+        start_date = datetime.now().date() - timedelta(days=BACKTEST_LOOKBACK_DAYS)
+        delivery_rows = db.query(DeliveryData).filter(
+            DeliveryData.symbol == symbol,
+            DeliveryData.date >= start_date,
+        ).order_by(DeliveryData.date).all()
+        sector_index_symbol = market_context.get("sector_index_symbol") or "^NSEI"
+        backtest_inputs = {
+            "delivery_df": _delivery_rows_to_frame(delivery_rows),
+            "peer_candles": _peer_candle_frames(
+                db,
+                symbol=symbol,
+                sector=market_context.get("sector") or "",
+                target_turnover_cr=avg_turnover_cr,
+                target_atr_pct=atr_pct,
+            ),
+            "nifty_df": _fetch_yf_history("^NSEI", years=5),
+            "sector_index_df": _fetch_yf_history(sector_index_symbol, years=5),
+            "backtest_data_notes": [],
+        }
+
     return {
         "symbol": symbol,
         "cmp": round(cmp, 2),
@@ -551,6 +706,15 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
         "corporate_action_note": market_context["corporate_action_note"],
         "missing_data": market_context["missing_data"],
         "candles_df": df[["date", "open", "high", "low", "close", "volume"]].copy(),
+        "weekly_df": (
+            df.set_index(pd.to_datetime(df["date"]))[["open", "high", "low", "close", "volume"]]
+            .resample("W-FRI")
+            .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+            .dropna()
+            .reset_index()
+            .rename(columns={"index": "date"})
+        ),
+        **backtest_inputs,
     }
 
 
@@ -2154,6 +2318,8 @@ def _backtest_volume_condition(vol_ratio: float | None) -> str:
 
 def _backtest_prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     frame = df.copy().reset_index(drop=True)
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame["date_dt"] = frame["date"]
     for col in ("open", "high", "low", "close", "volume"):
         frame[col] = frame[col].astype(float)
 
@@ -2186,6 +2352,84 @@ def _backtest_prepare_frame(df: pd.DataFrame) -> pd.DataFrame:
     frame["high_52w"] = high.rolling(252, min_periods=60).max()
     frame["pct_from_52w"] = (close / frame["high_52w"] - 1) * 100
     return frame
+
+
+def _condition_from_price_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty or "close" not in frame:
+        return pd.DataFrame(columns=["date_dt", "condition"])
+    out = frame.copy().reset_index(drop=True)
+    out["date_dt"] = pd.to_datetime(out["date"])
+    close = out["close"].astype(float)
+    out["ema50"] = close.ewm(span=50, adjust=False).mean()
+    out["ema200"] = close.ewm(span=200, adjust=False).mean()
+    out["perf20"] = close.pct_change(20) * 100
+    out["condition"] = "neutral"
+    out.loc[(close > out["ema50"]) & (out["perf20"] > 0), "condition"] = "bullish"
+    out.loc[(close < out["ema50"]) & (out["perf20"] < 0), "condition"] = "bearish"
+    out.loc[(pd.notna(out["ema200"])) & (close > out["ema50"]) & (out["ema50"] > out["ema200"]), "condition"] = "bullish"
+    out.loc[(pd.notna(out["ema200"])) & (close < out["ema50"]) & (out["ema50"] < out["ema200"]), "condition"] = "bearish"
+    return out[["date_dt", "condition"]].dropna().sort_values("date_dt")
+
+
+def _delivery_condition_frame(delivery_df: pd.DataFrame) -> pd.DataFrame:
+    if delivery_df is None or delivery_df.empty or "delivery_pct" not in delivery_df:
+        return pd.DataFrame(columns=["date_dt", "delivery_condition"])
+    out = delivery_df.copy().reset_index(drop=True)
+    out["date_dt"] = pd.to_datetime(out["date"])
+    delivery = out["delivery_pct"].astype(float)
+    rolling = delivery.rolling(10, min_periods=3).mean()
+    out["delivery_condition"] = "neutral"
+    out.loc[rolling >= 50, "delivery_condition"] = "supportive"
+    out.loc[rolling <= 30, "delivery_condition"] = "weak"
+    trend = rolling.diff(5)
+    out.loc[(rolling >= 40) & (trend > 2), "delivery_condition"] = "supportive"
+    out.loc[(rolling <= 40) & (trend < -2), "delivery_condition"] = "weak"
+    return out[["date_dt", "delivery_condition"]].dropna().sort_values("date_dt")
+
+
+def _weekly_condition_frame(weekly_df: pd.DataFrame) -> pd.DataFrame:
+    if weekly_df is None or weekly_df.empty or "close" not in weekly_df:
+        return pd.DataFrame(columns=["date_dt", "weekly_condition"])
+    out = weekly_df.copy().reset_index(drop=True)
+    out["date_dt"] = pd.to_datetime(out["date"])
+    close = out["close"].astype(float)
+    ema10 = close.ewm(span=10, adjust=False).mean()
+    ema30 = close.ewm(span=30, adjust=False).mean()
+    out["weekly_condition"] = "neutral"
+    out.loc[(close > ema10) & (ema10 > ema30), "weekly_condition"] = "bullish"
+    out.loc[(close < ema10) & (ema10 < ema30), "weekly_condition"] = "bearish"
+    return out[["date_dt", "weekly_condition"]].dropna().sort_values("date_dt")
+
+
+def _merge_asof_condition(base: pd.DataFrame, side: pd.DataFrame, column: str) -> pd.DataFrame:
+    if side is None or side.empty or column not in side:
+        base[column] = "unknown"
+        return base
+    merged = pd.merge_asof(
+        base.sort_values("date_dt"),
+        side[["date_dt", column]].sort_values("date_dt"),
+        on="date_dt",
+        direction="backward",
+    )
+    merged[column] = merged[column].fillna("unknown")
+    return merged.sort_index()
+
+
+def _backtest_enrich_context(
+    frame: pd.DataFrame,
+    delivery_df: pd.DataFrame | None,
+    nifty_df: pd.DataFrame | None,
+    sector_index_df: pd.DataFrame | None,
+    weekly_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    enriched = frame.copy().sort_values("date_dt").reset_index(drop=True)
+    enriched = _merge_asof_condition(enriched, _delivery_condition_frame(delivery_df), "delivery_condition")
+    nifty_conditions = _condition_from_price_frame(nifty_df).rename(columns={"condition": "market_condition"})
+    sector_conditions = _condition_from_price_frame(sector_index_df).rename(columns={"condition": "sector_condition"})
+    enriched = _merge_asof_condition(enriched, nifty_conditions, "market_condition")
+    enriched = _merge_asof_condition(enriched, sector_conditions, "sector_condition")
+    enriched = _merge_asof_condition(enriched, _weekly_condition_frame(weekly_df), "weekly_condition")
+    return enriched.reset_index(drop=True)
 
 
 def _backtest_signal_family(frame: pd.DataFrame, idx: int) -> str | None:
@@ -2247,6 +2491,26 @@ def _backtest_current_features(data: dict) -> dict:
         "rsi_zone": _backtest_rsi_zone(data.get("rsi")),
         "ema_structure": _backtest_ema_structure(current_row),
         "volume_condition": _backtest_volume_condition(data.get("vol_ratio")),
+        "delivery_condition": (
+            "supportive" if data.get("delivery_trend") == "rising" or data.get("delivery_proxy") == "supportive"
+            else "weak" if data.get("delivery_trend") == "falling" or data.get("delivery_proxy") == "weak"
+            else "neutral"
+        ),
+        "market_condition": (
+            "bullish" if data.get("nifty_trend_state") in ("bullish", "uptrend", "positive")
+            else "bearish" if data.get("nifty_trend_state") in ("bearish", "downtrend", "negative")
+            else "neutral"
+        ),
+        "sector_condition": (
+            "bullish" if data.get("sector_structure") == "HH/HL" or (data.get("sector_momentum_score") or 0) >= 6
+            else "bearish" if data.get("sector_structure") == "LH/LL" or (data.get("sector_momentum_score") or 0) <= 2
+            else "neutral"
+        ),
+        "weekly_condition": (
+            "bullish" if data.get("weekly_bias") == "bullish" or data.get("weekly_structure") == "HH/HL"
+            else "bearish" if data.get("weekly_bias") == "bearish" or data.get("weekly_structure") == "LH/LL"
+            else "neutral"
+        ),
         "atr_pct": data.get("atr_pct") or 0,
         "pct_from_52w": data.get("pct_from_52w") or -100,
     }
@@ -2272,6 +2536,18 @@ def _backtest_is_similar_setup(row: pd.Series, family: str, current: dict) -> bo
     if current_volume == "normal" and row_volume == "weak":
         return False
 
+    row_delivery = row.get("delivery_condition", "unknown")
+    if current["delivery_condition"] == "supportive" and row_delivery == "weak":
+        return False
+
+    for condition_key in ("market_condition", "sector_condition", "weekly_condition"):
+        current_condition = current.get(condition_key)
+        row_condition = row.get(condition_key, "unknown")
+        if current_condition == "bullish" and row_condition == "bearish":
+            return False
+        if current_condition == "bearish" and row_condition == "bullish":
+            return False
+
     atr_value = row.get("atr14")
     atr_pct = float(atr_value) / row["close"] * 100 if pd.notna(atr_value) and row["close"] else 0
     current_atr = current["atr_pct"]
@@ -2285,7 +2561,7 @@ def _backtest_is_similar_setup(row: pd.Series, family: str, current: dict) -> bo
     return True
 
 
-def _backtest_simulate_trade(frame: pd.DataFrame, idx: int, family: str) -> dict | None:
+def _backtest_simulate_trade(frame: pd.DataFrame, idx: int, family: str, source: str, source_symbol: str) -> dict | None:
     entry_row = frame.iloc[idx]
     entry = float(entry_row["close"])
     if entry <= 0:
@@ -2358,6 +2634,8 @@ def _backtest_simulate_trade(frame: pd.DataFrame, idx: int, family: str) -> dict
 
     return {
         "date": str(entry_row.get("date")),
+        "source": source,
+        "source_symbol": source_symbol,
         "family": family,
         "entry": round(entry, 2),
         "trigger": round(trigger, 2),
@@ -2371,6 +2649,24 @@ def _backtest_simulate_trade(frame: pd.DataFrame, idx: int, family: str) -> dict
         "max_drawdown_pct": max_drawdown,
         "retest_success": family == "Breakout Retest" and max_target_hit >= 1,
     }
+
+
+def _backtest_collect_trades(frame: pd.DataFrame, current: dict, source: str, source_symbol: str) -> list[dict]:
+    trades = []
+    if frame.empty:
+        return trades
+    min_idx = 252 if len(frame) >= 280 else 80
+    for idx in range(min_idx, max(min_idx, len(frame) - 20)):
+        family = _backtest_signal_family(frame, idx)
+        if not family:
+            continue
+        row = frame.iloc[idx]
+        if not _backtest_is_similar_setup(row, family, current):
+            continue
+        trade = _backtest_simulate_trade(frame, idx, family, source, source_symbol)
+        if trade:
+            trades.append(trade)
+    return trades
 
 
 def _score_backtest_engine(data: dict) -> dict:
@@ -2398,24 +2694,54 @@ def _score_backtest_engine(data: dict) -> dict:
             "verdict": "AVOID",
         }
 
-    frame = _backtest_prepare_frame(raw_df)
-    current = _backtest_current_features(data)
-    min_idx = 252 if len(frame) >= 280 else 80
-    trades = []
+    data_notes = list(data.get("backtest_data_notes") or [])
+    delivery_df = data.get("delivery_df")
+    nifty_df = data.get("nifty_df")
+    sector_index_df = data.get("sector_index_df")
+    weekly_df = data.get("weekly_df")
+    peer_candles = data.get("peer_candles") or []
 
-    for idx in range(min_idx, max(min_idx, len(frame) - 20)):
-        family = _backtest_signal_family(frame, idx)
-        if not family:
+    frame = _backtest_enrich_context(
+        _backtest_prepare_frame(raw_df),
+        delivery_df=delivery_df,
+        nifty_df=nifty_df,
+        sector_index_df=sector_index_df,
+        weekly_df=weekly_df,
+    )
+    current = _backtest_current_features(data)
+    same_stock_trades = _backtest_collect_trades(frame, current, "same_stock", data.get("symbol") or "")
+    peer_trades: list[dict] = []
+    for peer in peer_candles:
+        peer_raw_frame = peer.get("frame")
+        if peer_raw_frame is None or peer_raw_frame.empty:
             continue
-        row = frame.iloc[idx]
-        if not _backtest_is_similar_setup(row, family, current):
-            continue
-        trade = _backtest_simulate_trade(frame, idx, family)
-        if trade:
-            trades.append(trade)
+        peer_frame = _backtest_enrich_context(
+            _backtest_prepare_frame(peer_raw_frame),
+            delivery_df=None,
+            nifty_df=nifty_df,
+            sector_index_df=sector_index_df,
+            weekly_df=None,
+        )
+        peer_trades.extend(_backtest_collect_trades(peer_frame, current, "similar_sector_peer", peer.get("symbol") or ""))
+
+    trades = same_stock_trades + peer_trades
 
     sample_size = len(trades)
-    data_incomplete = len(frame) < 252
+    has_min_stock_data = len(frame) >= BACKTEST_MIN_DAILY_BARS
+    has_ideal_stock_data = len(frame) >= BACKTEST_IDEAL_DAILY_BARS
+    has_weekly_data = weekly_df is not None and not weekly_df.empty and len(weekly_df) >= 52
+    has_delivery_data = delivery_df is not None and not delivery_df.empty
+    has_nifty_data = nifty_df is not None and not nifty_df.empty
+    has_sector_index_data = sector_index_df is not None and not sector_index_df.empty
+    has_peer_data = bool(peer_candles)
+    data_incomplete = not (
+        has_min_stock_data
+        and has_weekly_data
+        and has_nifty_data
+        and has_sector_index_data
+        and has_delivery_data
+        and has_peer_data
+    )
 
     if sample_size:
         returns = [trade["net_return_pct"] for trade in trades]
@@ -2471,16 +2797,46 @@ def _score_backtest_engine(data: dict) -> dict:
         recent_points = 0
         recent_label = "negative"
 
+    same_stock_count = len(same_stock_trades)
+    peer_count = len(peer_trades)
+    peer_avg_r = float(np.mean([trade["r_multiple"] for trade in peer_trades])) if peer_trades else None
+    same_stock_avg_r = float(np.mean([trade["r_multiple"] for trade in same_stock_trades])) if same_stock_trades else None
     sector_confirmed = (data.get("sector_momentum_score") or 0) >= 3 and data.get("nifty_trend_state") != "bearish"
-    stability_points = 2 if sample_size >= 10 and sector_confirmed and false_breakout_rate <= 40 else 0
+    stable_across_contexts = (
+        same_stock_count >= 3
+        and peer_count >= 5
+        and (same_stock_avg_r or 0) > 0
+        and (peer_avg_r or 0) > 0
+        and sector_confirmed
+        and false_breakout_rate <= 40
+    )
+    stability_points = 2 if stable_across_contexts else 0
     backtest_score = sample_points + win_points + avg_r_points + false_breakout_points + recent_points + stability_points
     base_score = round(backtest_score * 5, 1)
 
     penalties = 0
     penalty_reasons = []
-    if data_incomplete:
-        penalties += 10
+    if not has_min_stock_data:
+        penalties += 12
         penalty_reasons.append("BACKTEST DATA INCOMPLETE: less than 1 year of daily OHLCV")
+    elif not has_ideal_stock_data:
+        penalties += 4
+        penalty_reasons.append("Less than ideal 3-year daily OHLCV history")
+    if not has_weekly_data:
+        penalties += 3
+        penalty_reasons.append("Weekly OHLCV validation unavailable")
+    if not has_nifty_data:
+        penalties += 3
+        penalty_reasons.append("NIFTY historical window unavailable")
+    if not has_sector_index_data:
+        penalties += 2
+        penalty_reasons.append("Sector index historical window unavailable")
+    if not has_delivery_data:
+        penalties += 2
+        penalty_reasons.append("Delivery percentage history unavailable")
+    if not has_peer_data:
+        penalties += 3
+        penalty_reasons.append("Same-sector similar peer history unavailable")
     if sample_size < 5:
         penalties += 10
         penalty_reasons.append("Fewer than 5 similar historical trades")
@@ -2517,8 +2873,24 @@ def _score_backtest_engine(data: dict) -> dict:
         "data_status": "BACKTEST DATA INCOMPLETE" if data_incomplete else "OK",
         "setup_family": current["family"],
         "sample_size": sample_size,
+        "same_stock_sample_size": same_stock_count,
+        "peer_sample_size": peer_count,
+        "data_quality": {
+            "daily_bars": len(frame),
+            "min_1y_daily_ohlcv": has_min_stock_data,
+            "ideal_3y_daily_ohlcv": has_ideal_stock_data,
+            "weekly_ohlcv": has_weekly_data,
+            "delivery_history": has_delivery_data,
+            "nifty_history": has_nifty_data,
+            "sector_index_history": has_sector_index_data,
+            "similar_sector_peers": len(peer_candles),
+            "adjusted_history_source": "yfinance auto_adjust=True where fetched",
+            "notes": data_notes,
+        },
         "metrics": {
             "number_of_historical_signals": sample_size,
+            "same_stock_signals": same_stock_count,
+            "similar_peer_signals": peer_count,
             "win_rate": round(win_rate, 1),
             "t1_hit_rate": round(t1_rate, 1),
             "t2_hit_rate": round(t2_rate, 1),
@@ -2535,6 +2907,9 @@ def _score_backtest_engine(data: dict) -> dict:
             "false_breakout_rate": round(false_breakout_rate, 1),
             "retest_success_rate": round(retest_success_rate, 1) if retest_success_rate is not None else None,
             "expectancy_per_trade": round(expectancy, 2),
+            "same_stock_average_r": round(same_stock_avg_r, 2) if same_stock_avg_r is not None else None,
+            "peer_average_r": round(peer_avg_r, 2) if peer_avg_r is not None else None,
+            "stable_across_stock_sector_market": stable_across_contexts,
             "recent_6m_performance": recent_label,
         },
         "components": {

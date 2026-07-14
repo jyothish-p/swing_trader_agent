@@ -986,6 +986,11 @@ function buildEngineReport(model, matePro) {
   if (model.quality_grade) lines.push(`- Backtest grade: ${model.quality_grade}.`);
   if (model.sample_size != null) lines.push(`- Historical sample size: ${model.sample_size} similar trades.`);
   if (model.data_status) lines.push(`- Data status: ${model.data_status}.`);
+  if (model.data_quality) {
+    const quality = model.data_quality;
+    lines.push(`- Data coverage: ${quality.daily_bars ?? '-'} daily bars; 1Y ${yesNo(quality.min_1y_daily_ohlcv)}, 3Y ${yesNo(quality.ideal_3y_daily_ohlcv)}, weekly ${yesNo(quality.weekly_ohlcv)}.`);
+    lines.push(`- Institutional inputs: delivery ${yesNo(quality.delivery_history)}, NIFTY ${yesNo(quality.nifty_history)}, sector index ${yesNo(quality.sector_index_history)}, peer sets ${quality.similar_sector_peers ?? 0}.`);
+  }
   if (model.metrics?.win_rate != null) {
     lines.push(`- Historical metrics: win rate ${model.metrics.win_rate}%, avg R ${model.metrics.average_r_multiple ?? '-'}, false breakout ${model.metrics.false_breakout_rate ?? '-'}%.`);
   }
@@ -1174,6 +1179,10 @@ function strengthText(strength) {
   if (strength === 'strong') return 'Strong contribution';
   if (strength === 'moderate') return 'Moderate contribution';
   return 'Weak contribution';
+}
+
+function yesNo(value) {
+  return value ? 'yes' : 'no';
 }
 
 function verdictTextClass(verdict) {

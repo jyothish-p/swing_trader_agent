@@ -13,7 +13,7 @@ from app.config import DATA_DIR
 from app.database import get_db
 from app.models import TechnicalAnalysis, ScreeningResult, ScreenerRunSnapshot
 from app.services.technical import run_full_analysis, analyze_stock
-from app.services.data_fetcher import get_stock_candles, bulk_download_historical
+from app.services.data_fetcher import get_stock_candles, bulk_download_historical, ensure_symbol_history
 from app.services.screener import _to_python
 from app.services.mate_pro import MODEL_WEIGHTS, run_mate_pro_analysis, run_mate_pro_batch
 
@@ -116,6 +116,9 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
             "data_status": backtest_summary.get("data_status"),
             "setup_family": backtest_summary.get("setup_family"),
             "sample_size": backtest_summary.get("sample_size"),
+            "same_stock_sample_size": backtest_summary.get("same_stock_sample_size"),
+            "peer_sample_size": backtest_summary.get("peer_sample_size"),
+            "data_quality": backtest_summary.get("data_quality"),
             "metrics": backtest_summary.get("metrics"),
         }
     trigger = mate_pro.get("trigger")
@@ -314,6 +317,9 @@ def _mate_pro_snapshot_row(result: dict) -> dict:
             "data_status": backtest.get("data_status"),
             "setup_family": backtest.get("setup_family"),
             "sample_size": backtest.get("sample_size"),
+            "same_stock_sample_size": backtest.get("same_stock_sample_size"),
+            "peer_sample_size": backtest.get("peer_sample_size"),
+            "data_quality": backtest.get("data_quality"),
             "metrics": backtest.get("metrics"),
         },
     }
@@ -471,6 +477,8 @@ def lookup_stock(
             detail=f"Could not fetch data for {symbol}. Check the symbol name — use NSE symbol without .NS suffix (e.g. RELIANCE, TCS, INFY)."
         )
 
+    deep_history_result = ensure_symbol_history(symbol, db, years=5, force_refresh=False)
+
     # Step 2: Ensure Stock record exists (needed for market cap in MATE-PRO)
     stock_record = db.query(Stock).filter(Stock.symbol == symbol).first()
     if not stock_record:
@@ -519,6 +527,7 @@ def lookup_stock(
         "data_status": {
             "fetched": symbol in fetch_result.get("success", []),
             "cached": symbol in fetch_result.get("skipped", []),
+            "deep_history": deep_history_result,
         },
         "error": "MATE-PRO analysis could not be completed" if mate_pro is None else None,
     })
@@ -541,6 +550,7 @@ def get_mate_pro_analysis(
     if df.empty:
         logger.info(f"No data for {symbol}, downloading...")
         bulk_download_historical([symbol], db, full_refresh=False)
+    ensure_symbol_history(symbol, db, years=5, force_refresh=False)
 
     result = run_mate_pro_analysis(db, symbol, allow_llm_verdict=True)
     if not result:

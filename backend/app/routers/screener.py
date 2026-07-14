@@ -330,6 +330,9 @@ def _mp_summary(mp: dict) -> dict:
             "data_status": backtest.get("data_status"),
             "setup_family": backtest.get("setup_family"),
             "sample_size": backtest.get("sample_size"),
+            "same_stock_sample_size": backtest.get("same_stock_sample_size"),
+            "peer_sample_size": backtest.get("peer_sample_size"),
+            "data_quality": backtest.get("data_quality"),
             "metrics": backtest.get("metrics"),
         },
     }

@@ -233,6 +233,110 @@ def bulk_download_historical(
     return result
 
 
+def ensure_symbol_history(
+    symbol: str,
+    db: Session,
+    years: int = 5,
+    force_refresh: bool = False,
+) -> dict:
+    """
+    Ensure one symbol has deep adjusted daily history for full-detail analysis.
+    This is intentionally single-symbol so dashboard batch runs stay fast.
+    """
+    import time
+
+    symbol = symbol.upper()
+    start_time = time.time()
+    today = date.today()
+    start_date = today - timedelta(days=years * 365 + 10)
+    latest_date = _get_last_date_in_db(db, symbol)
+    earliest_date = db.query(func.min(DailyCandle.date)).filter(DailyCandle.symbol == symbol).scalar()
+
+    if (
+        not force_refresh
+        and earliest_date
+        and earliest_date <= start_date + timedelta(days=14)
+        and latest_date
+        and latest_date >= today - timedelta(days=5)
+    ):
+        return {
+            "symbol": symbol,
+            "status": "cached",
+            "added": 0,
+            "earliest_date": earliest_date.isoformat(),
+            "latest_date": latest_date.isoformat(),
+            "elapsed_seconds": round(time.time() - start_time, 2),
+        }
+
+    yf_symbol = _yf_symbol(symbol)
+    try:
+        logger.info("Fetching deep adjusted history for %s from %s", symbol, start_date)
+        df = yf.download(
+            yf_symbol,
+            start=start_date.isoformat(),
+            end=(today + timedelta(days=1)).isoformat(),
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if df.empty:
+            return {
+                "symbol": symbol,
+                "status": "failed",
+                "error": "empty yfinance response",
+                "elapsed_seconds": round(time.time() - start_time, 2),
+            }
+
+        if isinstance(df.columns, pd.MultiIndex):
+            if yf_symbol in df.columns.get_level_values(0):
+                df = df[yf_symbol].copy()
+            else:
+                df.columns = df.columns.get_level_values(-1)
+
+        df = df.dropna(subset=["Close"])
+        db.query(DailyCandle).filter(
+            DailyCandle.symbol == symbol,
+            DailyCandle.date >= start_date,
+        ).delete(synchronize_session=False)
+        db.commit()
+
+        pending_objects = []
+        for idx, row in df.iterrows():
+            candle_date = idx.date() if hasattr(idx, "date") else idx
+            pending_objects.append(DailyCandle(
+                symbol=symbol,
+                date=candle_date,
+                open=round(float(row.get("Open", 0)), 2),
+                high=round(float(row.get("High", 0)), 2),
+                low=round(float(row.get("Low", 0)), 2),
+                close=round(float(row.get("Close", 0)), 2),
+                volume=int(row.get("Volume", 0)),
+                adj_close=round(float(row.get("Close", 0)), 2),
+            ))
+
+        if pending_objects:
+            db.bulk_save_objects(pending_objects)
+        db.commit()
+
+        return {
+            "symbol": symbol,
+            "status": "fetched",
+            "added": len(pending_objects),
+            "earliest_date": min(obj.date for obj in pending_objects).isoformat() if pending_objects else None,
+            "latest_date": max(obj.date for obj in pending_objects).isoformat() if pending_objects else None,
+            "elapsed_seconds": round(time.time() - start_time, 2),
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Deep history fetch failed for %s: %s", symbol, exc, exc_info=True)
+        return {
+            "symbol": symbol,
+            "status": "failed",
+            "error": str(exc),
+            "elapsed_seconds": round(time.time() - start_time, 2),
+        }
+
+
 def get_stock_candles(
     db: Session,
     symbol: str,
