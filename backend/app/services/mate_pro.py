@@ -6,7 +6,7 @@ Implements the active MATE-PRO engines as mechanical scoring systems:
   3. Swing AI v12.2
   4. Swing AI v12.1
   5. KING v16
-  6. Backtest Engine
+  6. Backtest Engine (informational; excluded from final verdict weightage)
 
 Each model takes the same raw technical data from our analysis engine and
 applies its own scoring formula to produce scores, verdicts, and trade plans.
@@ -560,10 +560,9 @@ ACTIVE_ENGINE_KEYS = (
     "Swing_AI",
     "Swing_AI_Hyper",
     "KING",
-    "BACKTEST",
 )
 
-MODEL_WEIGHTS = {key: 1 / len(ACTIVE_ENGINE_KEYS) for key in ACTIVE_ENGINE_KEYS}
+MODEL_WEIGHTS = {key: 0.20 for key in ACTIVE_ENGINE_KEYS}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -2553,6 +2552,24 @@ def _score_backtest_engine(data: dict) -> dict:
     })
 
 
+def _backtest_not_run_result(reason: str = "Backtest skipped for batch speed") -> dict:
+    return {
+        "model": "Backtest Engine",
+        "scanner_score": None,
+        "backtest_score": None,
+        "quality_grade": "Not run",
+        "data_status": "BACKTEST NOT RUN",
+        "setup_family": None,
+        "sample_size": None,
+        "metrics": {},
+        "components": {},
+        "penalties": 0,
+        "penalty_reasons": [reason],
+        "probability_pct": None,
+        "verdict": "INFO",
+    }
+
+
 def _generate_trade_plan(data: dict) -> dict:
     """Generate trade plans (scanner + positional) from raw data."""
     cmp = data["cmp"]
@@ -2778,18 +2795,17 @@ def _generate_one_line_verdict(
 
 
 # ─────────────────────────────────────────────────
-# COMPOSITE ACROSS ALL ACTIVE ENGINES
+# COMPOSITE ACROSS FIVE VERDICT ENGINES
 # ─────────────────────────────────────────────────
 
 def _compute_composite(models: dict[str, dict]) -> dict:
-    """Compute the equal-weight composite across every active engine."""
+    """Compute the equal-weight composite across the five verdict engines."""
     score_map = {
         "TITAN": models["titan"]["scanner_score"],
         "TITAN_v19": models["titan_v19"]["scanner_score"],
         "Swing_AI": models["swing_ai_v12_2"]["selection_total"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["selection_total"],
         "KING": models["king"]["scanner_score"],
-        "BACKTEST": models["backtest"]["scanner_score"],
     }
     probability_map = {
         "TITAN": models["titan"]["probability_pct"],
@@ -2797,7 +2813,6 @@ def _compute_composite(models: dict[str, dict]) -> dict:
         "Swing_AI": models["swing_ai_v12_2"]["final_probability"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["final_probability"],
         "KING": models["king"]["probability_pct"],
-        "BACKTEST": models["backtest"]["probability_pct"],
     }
     verdict_map = {
         "TITAN": models["titan"]["verdict"],
@@ -2805,7 +2820,6 @@ def _compute_composite(models: dict[str, dict]) -> dict:
         "Swing_AI": models["swing_ai_v12_2"]["verdict"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["verdict"],
         "KING": models["king"]["verdict"],
-        "BACKTEST": models["backtest"]["verdict"],
     }
 
     composite_score = round(sum(score_map[key] * MODEL_WEIGHTS[key] for key in MODEL_WEIGHTS), 1)
@@ -2888,7 +2902,7 @@ def run_mate_pro_analysis(
     swing_ai = _score_swing_ai_v12_2(raw)
     swing_ai_hyper = _score_swing_ai_v12_1(raw)
     king = _score_king(raw)
-    backtest = _score_backtest_engine(raw)
+    backtest = _backtest_not_run_result() if mode == "batch" else _score_backtest_engine(raw)
 
     # Generate trade plans
     trade_plans = _generate_trade_plan(raw)
@@ -2900,7 +2914,6 @@ def run_mate_pro_analysis(
         "swing_ai_v12_2": swing_ai,
         "swing_ai_v12_1": swing_ai_hyper,
         "king": king,
-        "backtest": backtest,
     })
     fallback_one_line_verdict = _generate_one_line_verdict(symbol, raw, titan, swing_ai, king, backtest, composite, trade_plans)
     if allow_llm_verdict:
@@ -2991,7 +3004,7 @@ def run_mate_pro_analysis(
             "swing_ai_v12_2": swing_ai,
             "swing_ai_v12_1": swing_ai_hyper,
             "king": king,
-            "backtest": backtest,
+            **({"backtest": backtest} if mode != "batch" else {}),
         },
 
         # Composite

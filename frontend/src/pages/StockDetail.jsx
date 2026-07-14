@@ -70,7 +70,6 @@ export default function StockDetail() {
   const ta = analysis?.analysis?.[timeframe] || analysis?.analysis?.daily || {};
   const chart = chartData?.chart_data || [];
   const modelEntries = orderedModelEntries(matePro?.models);
-  const engineCount = modelEntries.length || 6;
   const selectedEngine = selectedEngineKey ? matePro?.models?.[selectedEngineKey] : null;
   const sectorMomentum = matePro?.context?.sector_momentum_score ?? 0;
   const sectorMomentumTone = sectorMomentum >= 6
@@ -144,7 +143,7 @@ export default function StockDetail() {
               {/* Composite Verdict */}
               <div className="bg-slate-800 rounded-lg p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-white">{engineCount}-Engine Consensus</h3>
+                  <h3 className="text-lg font-semibold text-white">5-Engine Consensus</h3>
                   <span className={`text-sm font-mono px-2 py-0.5 rounded ${
                     matePro.composite.agreement === 'UNANIMOUS' ? 'bg-emerald-500/20 text-emerald-300' :
                     matePro.composite.agreement === 'MAJORITY' ? 'bg-amber-500/20 text-amber-300' :
@@ -888,7 +887,8 @@ function buildStockReport(symbol, matePro, ta) {
     `- Timeframe analyzed: Daily primary with weekly/monthly context`,
     `- Overall trend: ${trendLabel(context, metrics)}`,
     `- Current price snapshot: ${formatMoney(matePro.cmp)}${matePro.timestamp ? ` as of ${formatTimestamp(matePro.timestamp)}` : ''}`,
-    `- Final model: ${orderedModelEntries(matePro.models).length || 6}-engine MATE-PRO consensus`,
+    `- Final model: 5-engine MATE-PRO consensus`,
+    `- Backtest Engine: ${matePro.models?.backtest ? 'separate historical validation, not included in final verdict weightage' : 'not run for this dashboard snapshot'}`,
     `- Final score: ${comp.composite_score ?? '-'} / 100`,
     `- Final verdict: ${comp.consensus_verdict || '-'} (${comp.agreement || 'agreement not available'})`,
     `- Trend summary: ${trendSummary(context, metrics, ta)}`,

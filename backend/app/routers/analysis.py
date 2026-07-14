@@ -101,6 +101,23 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
     scores = mate_pro.get("model_scores") or {}
     verdicts = mate_pro.get("model_verdicts") or {}
     backtest_summary = mate_pro.get("backtest") or {}
+    models = {
+        "titan": _snapshot_model("TITAN v20", scores.get("TITAN") or scores.get("TITAN_v20"), verdicts.get("TITAN") or verdicts.get("TITAN_v20")),
+        "titan_v19": _snapshot_model("TITAN v19", scores.get("TITAN_v19"), verdicts.get("TITAN_v19")),
+        "swing_ai_v12_2": _snapshot_model("Swing AI v12.2", scores.get("Swing_AI"), verdicts.get("Swing_AI")),
+        "swing_ai_v12_1": _snapshot_model("Swing AI v12.1", scores.get("Swing_AI_Hyper"), verdicts.get("Swing_AI_Hyper")),
+        "king": _snapshot_model("KING v16", scores.get("KING"), verdicts.get("KING")),
+    }
+    if "BACKTEST" in scores or backtest_summary.get("backtest_score") is not None:
+        models["backtest"] = {
+            **_snapshot_model("Backtest Engine", scores.get("BACKTEST"), verdicts.get("BACKTEST")),
+            "backtest_score": backtest_summary.get("backtest_score"),
+            "quality_grade": backtest_summary.get("quality_grade"),
+            "data_status": backtest_summary.get("data_status"),
+            "setup_family": backtest_summary.get("setup_family"),
+            "sample_size": backtest_summary.get("sample_size"),
+            "metrics": backtest_summary.get("metrics"),
+        }
     trigger = mate_pro.get("trigger")
     stop_loss = mate_pro.get("stop_loss")
     targets = mate_pro.get("targets") or {}
@@ -166,22 +183,7 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
             "model_verdicts": verdicts,
             "model_weights": mate_pro.get("model_weights"),
         },
-        "models": {
-            "titan": _snapshot_model("TITAN v20", scores.get("TITAN") or scores.get("TITAN_v20"), verdicts.get("TITAN") or verdicts.get("TITAN_v20")),
-            "titan_v19": _snapshot_model("TITAN v19", scores.get("TITAN_v19"), verdicts.get("TITAN_v19")),
-            "swing_ai_v12_2": _snapshot_model("Swing AI v12.2", scores.get("Swing_AI"), verdicts.get("Swing_AI")),
-            "swing_ai_v12_1": _snapshot_model("Swing AI v12.1", scores.get("Swing_AI_Hyper"), verdicts.get("Swing_AI_Hyper")),
-            "king": _snapshot_model("KING v16", scores.get("KING"), verdicts.get("KING")),
-            "backtest": {
-                **_snapshot_model("Backtest Engine", scores.get("BACKTEST"), verdicts.get("BACKTEST")),
-                "backtest_score": backtest_summary.get("backtest_score"),
-                "quality_grade": backtest_summary.get("quality_grade"),
-                "data_status": backtest_summary.get("data_status"),
-                "setup_family": backtest_summary.get("setup_family"),
-                "sample_size": backtest_summary.get("sample_size"),
-                "metrics": backtest_summary.get("metrics"),
-            },
-        },
+        "models": models,
         "snapshot_source": "screener_run",
     })
 
