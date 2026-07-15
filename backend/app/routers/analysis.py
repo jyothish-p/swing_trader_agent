@@ -281,6 +281,7 @@ def _mate_pro_snapshot_row(result: dict) -> dict:
         "model_scores": result["composite"]["model_scores"],
         "model_verdicts": result["composite"]["model_verdicts"],
         "model_weights": result["composite"].get("model_weights"),
+        "models": result.get("models"),
         "action": result["trade_plans"]["scanner_plan"]["action"],
         "trigger": result["levels"]["trigger"],
         "stop_loss": result["levels"]["invalidation"],

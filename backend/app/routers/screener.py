@@ -287,6 +287,7 @@ def _mp_summary(mp: dict) -> dict:
         "model_scores": mp["composite"]["model_scores"],
         "model_verdicts": mp["composite"]["model_verdicts"],
         "model_weights": mp["composite"].get("model_weights"),
+        "models": mp.get("models"),
         "action": mp["trade_plans"]["scanner_plan"]["action"],
         "trigger": mp["levels"]["trigger"],
         "stop_loss": mp["levels"]["invalidation"],
