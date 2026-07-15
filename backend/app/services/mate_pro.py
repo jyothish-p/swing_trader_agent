@@ -263,7 +263,7 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
     Extract all raw technical data needed by the scoring models.
     Returns a comprehensive dict of metrics, or None if insufficient data.
     """
-    lookback_days = 400 if mode == "batch" else 5 * 365 + 10
+    lookback_days = 400 if mode == "batch" else BACKTEST_LOOKBACK_DAYS
 
     # Get daily candles. Full mode uses deep history for the Backtest Engine.
     candles = db.query(DailyCandle).filter(
