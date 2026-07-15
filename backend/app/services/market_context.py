@@ -382,15 +382,15 @@ def _sector_proxy_for(sector: str, industry: str) -> dict[str, str]:
 
     mapping = [
         (("bank", "financial", "finance", "insurance", "investment"), {"yahoo": "^NSEBANK", "tv": "NSE:NIFTY BANK", "label": "Nifty Bank"}),
-        (("pharma", "pharmaceutical", "pharmaceuticals", "health technology", "biotech", "drug"), {"yahoo": "CNXPHARMA.NS", "tv": "NSE:CNXPHARMA", "label": "Nifty Pharma"}),
-        (("metal", "mining", "steel", "non-energy minerals"), {"yahoo": "CNXMETAL.NS", "tv": "NSE:CNXMETAL", "label": "Nifty Metal"}),
-        (("energy minerals", "oil", "gas", "utilities", "refining", "petrochem"), {"yahoo": "CNXENERGY.NS", "tv": "NSE:CNXENERGY", "label": "Nifty Energy"}),
-        (("auto", "vehicle", "tyre", "transportation"), {"yahoo": "CNXAUTO.NS", "tv": "NSE:CNXAUTO", "label": "Nifty Auto"}),
-        (("consumer", "retail", "food", "fmcg", "household"), {"yahoo": "CNXFMCG.NS", "tv": "NSE:CNXFMCG", "label": "Nifty FMCG"}),
-        (("industrial", "capital goods", "construction", "engineering", "infrastructure"), {"yahoo": "CNXINFRA.NS", "tv": "NSE:CNXINFRA", "label": "Nifty Infra"}),
-        (("real estate", "realty"), {"yahoo": "CNXREALTY.NS", "tv": "NSE:CNXREALTY", "label": "Nifty Realty"}),
-        (("media", "entertainment", "broadcast"), {"yahoo": "CNXMEDIA.NS", "tv": "NSE:CNXMEDIA", "label": "Nifty Media"}),
-        (("technology services", "information technology", "software", "communication equipment", "telecommunication", "electronic technology", "semiconductor"), {"yahoo": "CNXIT.NS", "tv": "NSE:CNXIT", "label": "Nifty IT"}),
+        (("pharma", "pharmaceutical", "pharmaceuticals", "health technology", "biotech", "drug"), {"yahoo": "^CNXPHARMA", "tv": "NSE:CNXPHARMA", "label": "Nifty Pharma"}),
+        (("metal", "mining", "steel", "non-energy minerals"), {"yahoo": "^CNXMETAL", "tv": "NSE:CNXMETAL", "label": "Nifty Metal"}),
+        (("energy minerals", "oil", "gas", "utilities", "refining", "petrochem"), {"yahoo": "^CNXENERGY", "tv": "NSE:CNXENERGY", "label": "Nifty Energy"}),
+        (("auto", "vehicle", "tyre", "transportation"), {"yahoo": "^CNXAUTO", "tv": "NSE:CNXAUTO", "label": "Nifty Auto"}),
+        (("consumer", "retail", "food", "fmcg", "household"), {"yahoo": "^CNXFMCG", "tv": "NSE:CNXFMCG", "label": "Nifty FMCG"}),
+        (("industrial", "capital goods", "construction", "engineering", "infrastructure"), {"yahoo": "^CNXINFRA", "tv": "NSE:CNXINFRA", "label": "Nifty Infra"}),
+        (("real estate", "realty"), {"yahoo": "^CNXREALTY", "tv": "NSE:CNXREALTY", "label": "Nifty Realty"}),
+        (("media", "entertainment", "broadcast"), {"yahoo": "^CNXMEDIA", "tv": "NSE:CNXMEDIA", "label": "Nifty Media"}),
+        (("technology services", "information technology", "software", "communication equipment", "telecommunication", "electronic technology", "semiconductor"), {"yahoo": "^CNXIT", "tv": "NSE:CNXIT", "label": "Nifty IT"}),
     ]
 
     for keywords, proxy in mapping:

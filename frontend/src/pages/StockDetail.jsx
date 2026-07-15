@@ -1025,7 +1025,7 @@ function buildEngineReport(model, matePro) {
   if (model.data_quality) {
     const quality = model.data_quality;
     lines.push(`- Data coverage: ${quality.daily_bars ?? '-'} daily bars; 1Y ${yesNo(quality.min_1y_daily_ohlcv)}, 3Y ${yesNo(quality.ideal_3y_daily_ohlcv)}, weekly ${yesNo(quality.weekly_ohlcv)}.`);
-    lines.push(`- Institutional inputs: delivery ${yesNo(quality.delivery_history)}, NIFTY ${yesNo(quality.nifty_history)}, sector index ${yesNo(quality.sector_index_history)}, peer sets ${quality.similar_sector_peers ?? 0}.`);
+    lines.push(`- Institutional inputs: delivery ${yesNo(quality.delivery_history)}${quality.delivery_history_source ? ` (${labelize(quality.delivery_history_source)})` : ''}, NIFTY ${yesNo(quality.nifty_history)}, sector index ${yesNo(quality.sector_index_history)}, peer sets ${quality.similar_sector_peers ?? 0}.`);
   }
   if (model.metrics?.win_rate != null) {
     lines.push(`- Historical metrics: win rate ${model.metrics.win_rate}%, avg R ${model.metrics.average_r_multiple ?? '-'}, false breakout ${model.metrics.false_breakout_rate ?? '-'}%.`);
@@ -1055,7 +1055,7 @@ function buildCombinedBacktestReport(report = {}) {
     `Backtest score: ${summary.backtest_score ?? '-'} / 20; grade ${summary.grade || '-'}; status ${summary.data_status || '-'}`,
     `Samples: total ${summary.sample_size ?? 0}, same-stock ${summary.same_stock_sample_size ?? 0}, similar-peer ${summary.peer_sample_size ?? 0}`,
     `Metrics: win rate ${metrics.win_rate ?? summary.win_rate ?? '-'}%, avg R ${metrics.average_r_multiple ?? summary.average_r_multiple ?? '-'}, false breakout ${metrics.false_breakout_rate ?? summary.false_breakout_rate ?? '-'}%, expectancy ${metrics.expectancy_per_trade ?? summary.expectancy_per_trade ?? '-'}R`,
-    `Data quality: ${quality.daily_bars ?? '-'} daily bars; 1Y ${yesNo(quality.min_1y_daily_ohlcv)}, 3Y ${yesNo(quality.ideal_3y_daily_ohlcv)}, weekly ${yesNo(quality.weekly_ohlcv)}, delivery ${yesNo(quality.delivery_history)}, NIFTY ${yesNo(quality.nifty_history)}, sector index ${yesNo(quality.sector_index_history)}, peer sets ${quality.similar_sector_peers ?? 0}`,
+    `Data quality: ${quality.daily_bars ?? '-'} daily bars; 1Y ${yesNo(quality.min_1y_daily_ohlcv)}, 3Y ${yesNo(quality.ideal_3y_daily_ohlcv)}, weekly ${yesNo(quality.weekly_ohlcv)}, delivery ${yesNo(quality.delivery_history)}${quality.delivery_history_source ? ` (${labelize(quality.delivery_history_source)})` : ''}, NIFTY ${yesNo(quality.nifty_history)}, sector index ${yesNo(quality.sector_index_history)}, peer sets ${quality.similar_sector_peers ?? 0}`,
   ];
   if (validations.length) {
     lines.push('Engine validation:');

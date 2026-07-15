@@ -68,6 +68,19 @@ BACKTEST_IDEAL_DAILY_BARS = 756
 _YF_HISTORY_CACHE: dict[str, pd.DataFrame] = {}
 
 
+YF_INDEX_FALLBACKS = {
+    "CNXPHARMA.NS": ["^CNXPHARMA"],
+    "CNXMETAL.NS": ["^CNXMETAL"],
+    "CNXENERGY.NS": ["^CNXENERGY"],
+    "CNXAUTO.NS": ["^CNXAUTO"],
+    "CNXFMCG.NS": ["^CNXFMCG"],
+    "CNXINFRA.NS": ["^CNXINFRA"],
+    "CNXREALTY.NS": ["^CNXREALTY"],
+    "CNXMEDIA.NS": ["^CNXMEDIA"],
+    "CNXIT.NS": ["^CNXIT"],
+}
+
+
 def _candles_to_frame(candles: list[DailyCandle]) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame()
@@ -93,37 +106,95 @@ def _delivery_rows_to_frame(rows: list[DeliveryData]) -> pd.DataFrame:
     } for row in rows]).sort_values("date").reset_index(drop=True)
 
 
+def _normalize_yf_history(data: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if data is None or data.empty:
+        return pd.DataFrame()
+    frame = data.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        if symbol in frame.columns.get_level_values(0):
+            frame = frame.xs(symbol, axis=1, level=0)
+        elif symbol in frame.columns.get_level_values(-1):
+            frame = frame.xs(symbol, axis=1, level=-1)
+        elif len(frame.columns.levels[0]) == 1:
+            frame = frame.droplevel(0, axis=1)
+        elif len(frame.columns.levels[-1]) == 1:
+            frame = frame.droplevel(-1, axis=1)
+        else:
+            return pd.DataFrame()
+
+    frame = frame.reset_index()
+    frame.columns = [str(col).lower().replace(" ", "_") for col in frame.columns]
+    if "date" not in frame.columns and "datetime" in frame.columns:
+        frame = frame.rename(columns={"datetime": "date"})
+    if "adj_close" in frame.columns and "close" not in frame.columns:
+        frame = frame.rename(columns={"adj_close": "close"})
+    keep = [col for col in ("date", "open", "high", "low", "close", "volume") if col in frame.columns]
+    if "date" not in keep or "close" not in keep:
+        return pd.DataFrame()
+    return frame[keep].dropna(subset=["close"]).reset_index(drop=True)
+
+
 def _fetch_yf_history(symbol: str, years: int = 5) -> pd.DataFrame:
     cache_key = f"{symbol}|{years}"
     if cache_key in _YF_HISTORY_CACHE:
         return _YF_HISTORY_CACHE[cache_key].copy()
 
-    try:
-        data = yf.download(
-            symbol,
-            period=f"{years}y",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-        )
-        if data.empty:
-            frame = pd.DataFrame()
-        else:
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(-1)
-            frame = data.reset_index()
-            frame.columns = [str(col).lower().replace(" ", "_") for col in frame.columns]
-            if "date" not in frame.columns and "datetime" in frame.columns:
-                frame = frame.rename(columns={"datetime": "date"})
-            keep = [col for col in ("date", "open", "high", "low", "close", "volume") if col in frame.columns]
-            frame = frame[keep].dropna(subset=["close"]).reset_index(drop=True)
-        _YF_HISTORY_CACHE[cache_key] = frame.copy()
-        return frame
-    except Exception as exc:
-        logger.warning("Failed to fetch index history for %s: %s", symbol, exc)
-        _YF_HISTORY_CACHE[cache_key] = pd.DataFrame()
+    candidates = [symbol, *YF_INDEX_FALLBACKS.get(symbol, [])]
+    last_error = None
+    for candidate in dict.fromkeys(candidates):
+        try:
+            data = yf.download(
+                candidate,
+                period=f"{years}y",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+            frame = _normalize_yf_history(data, candidate)
+            if not frame.empty:
+                _YF_HISTORY_CACHE[cache_key] = frame.copy()
+                return frame
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Failed to fetch index history for %s: %s", candidate, exc)
+
+    if last_error:
+        logger.warning("All index history fallbacks failed for %s: %s", symbol, last_error)
+    _YF_HISTORY_CACHE[cache_key] = pd.DataFrame()
+    return pd.DataFrame()
+
+
+def _delivery_proxy_from_candles(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a deterministic delivery-participation proxy when actual NSE delivery rows
+    are unavailable. It uses only OHLCV behavior and is marked in data_quality notes.
+    """
+    if frame is None or frame.empty:
         return pd.DataFrame()
+    out = frame[["date", "open", "high", "low", "close", "volume"]].copy().reset_index(drop=True)
+    volume = out["volume"].astype(float)
+    close = out["close"].astype(float)
+    high = out["high"].astype(float)
+    low = out["low"].astype(float)
+    open_ = out["open"].astype(float)
+    avg_volume = volume.rolling(20, min_periods=5).mean().replace(0, np.nan)
+    vol_ratio = (volume / avg_volume).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    day_range = (high - low).replace(0, np.nan)
+    close_position = ((close - low) / day_range).replace([np.inf, -np.inf], np.nan).fillna(0.5)
+    body_ratio = ((close - open_).abs() / day_range).replace([np.inf, -np.inf], np.nan).fillna(0.35)
+    delivery_pct = 38 + close_position * 18 + body_ratio * 8 + np.clip(vol_ratio - 1, -0.5, 1.5) * 5
+    out["delivery_pct"] = np.clip(delivery_pct, 20, 75).round(2)
+    out["delivery_volume"] = (volume * out["delivery_pct"] / 100).round().astype(int)
+    out["traded_volume"] = volume.round().astype(int)
+    return out[["date", "delivery_pct", "delivery_volume", "traded_volume"]]
+
+
+def _effective_delivery_frame(delivery_df: pd.DataFrame | None, candle_frame: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    if delivery_df is not None and not delivery_df.empty:
+        return delivery_df, "nse_delivery_table"
+    proxy = _delivery_proxy_from_candles(candle_frame)
+    return proxy, "ohlcv_volume_proxy" if not proxy.empty else "unavailable"
 
 
 def _peer_candle_frames(
@@ -577,8 +648,15 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
             DeliveryData.date >= start_date,
         ).order_by(DeliveryData.date).all()
         sector_index_symbol = market_context.get("sector_index_symbol") or "^NSEI"
+        delivery_frame, delivery_source = _effective_delivery_frame(_delivery_rows_to_frame(delivery_rows), df)
+        data_notes = []
+        if delivery_source == "ohlcv_volume_proxy":
+            data_notes.append("Delivery history derived from OHLCV volume proxy because NSE delivery table is empty")
+        elif delivery_source == "unavailable":
+            data_notes.append("Delivery history unavailable")
         backtest_inputs = {
-            "delivery_df": _delivery_rows_to_frame(delivery_rows),
+            "delivery_df": delivery_frame,
+            "delivery_history_source": delivery_source,
             "peer_candles": _peer_candle_frames(
                 db,
                 symbol=symbol,
@@ -588,7 +666,7 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
             ),
             "nifty_df": _fetch_yf_history("^NSEI", years=5),
             "sector_index_df": _fetch_yf_history(sector_index_symbol, years=5),
-            "backtest_data_notes": [],
+            "backtest_data_notes": data_notes,
         }
 
     return {
@@ -3080,6 +3158,7 @@ def _score_backtest_engine(data: dict) -> dict:
         }
 
     data_notes = list(data.get("backtest_data_notes") or [])
+    delivery_source = data.get("delivery_history_source") or "unavailable"
     delivery_df = data.get("delivery_df")
     nifty_df = data.get("nifty_df")
     sector_index_df = data.get("sector_index_df")
@@ -3266,6 +3345,7 @@ def _score_backtest_engine(data: dict) -> dict:
             "ideal_3y_daily_ohlcv": has_ideal_stock_data,
             "weekly_ohlcv": has_weekly_data,
             "delivery_history": has_delivery_data,
+            "delivery_history_source": delivery_source if has_delivery_data else "unavailable",
             "nifty_history": has_nifty_data,
             "sector_index_history": has_sector_index_data,
             "similar_sector_peers": len(peer_candles),

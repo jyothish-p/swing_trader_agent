@@ -31,6 +31,33 @@ def _get_last_date_in_db(db: Session, symbol: str) -> date | None:
     return result
 
 
+def _normalize_yf_ohlcv(data: pd.DataFrame, yf_symbol: str | None = None) -> pd.DataFrame:
+    """Return a single-symbol OHLCV frame from yfinance's old or new column layout."""
+    if data is None or data.empty:
+        return pd.DataFrame()
+
+    df = data.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        if yf_symbol and yf_symbol in df.columns.get_level_values(0):
+            df = df.xs(yf_symbol, axis=1, level=0)
+        elif yf_symbol and yf_symbol in df.columns.get_level_values(-1):
+            df = df.xs(yf_symbol, axis=1, level=-1)
+        elif len(df.columns.levels[0]) == 1:
+            df = df.droplevel(0, axis=1)
+        elif len(df.columns.levels[-1]) == 1:
+            df = df.droplevel(-1, axis=1)
+        else:
+            return pd.DataFrame()
+
+    df.columns = [str(col).strip().title().replace(" ", " ") for col in df.columns]
+    if "Adj Close" in df.columns and "Close" not in df.columns:
+        df = df.rename(columns={"Adj Close": "Close"})
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    if not all(col in df.columns for col in required):
+        return pd.DataFrame()
+    return df[required].dropna(subset=["Close"]).copy()
+
+
 def _get_last_dates_map(db: Session, symbols: list[str]) -> dict[str, date]:
     rows = db.query(
         DailyCandle.symbol,
@@ -156,26 +183,16 @@ def bulk_download_historical(
                     yf_sym = _yf_symbol(sym)
                     try:
                         if len(batch_symbols) == 1:
-                            df = data.copy()
-                            if isinstance(df.columns, pd.MultiIndex):
-                                if yf_sym in df.columns.get_level_values(0):
-                                    df = df[yf_sym].copy()
-                                else:
-                                    df.columns = df.columns.droplevel(0)
+                            df = _normalize_yf_ohlcv(data, yf_sym)
+                        elif isinstance(data.columns, pd.MultiIndex):
+                            df = _normalize_yf_ohlcv(data, yf_sym)
                         else:
-                            if isinstance(data.columns, pd.MultiIndex) and yf_sym in data.columns.get_level_values(0):
-                                df = data[yf_sym].copy()
-                            else:
-                                df = pd.DataFrame()
-
-                        if isinstance(df.columns, pd.MultiIndex):
-                            df.columns = df.columns.get_level_values(-1)
+                            df = pd.DataFrame()
 
                         if df.empty or df.dropna(how="all").empty:
                             result["failed"].append(sym)
                             continue
 
-                        df = df.dropna(subset=["Close"])
                         candles_added = 0
                         existing_dates = existing_dates_map.get(sym, set())
 
@@ -287,13 +304,14 @@ def ensure_symbol_history(
                 "elapsed_seconds": round(time.time() - start_time, 2),
             }
 
-        if isinstance(df.columns, pd.MultiIndex):
-            if yf_symbol in df.columns.get_level_values(0):
-                df = df[yf_symbol].copy()
-            else:
-                df.columns = df.columns.get_level_values(-1)
-
-        df = df.dropna(subset=["Close"])
+        df = _normalize_yf_ohlcv(df, yf_symbol)
+        if df.empty:
+            return {
+                "symbol": symbol,
+                "status": "failed",
+                "error": "empty normalized yfinance OHLCV response",
+                "elapsed_seconds": round(time.time() - start_time, 2),
+            }
         db.query(DailyCandle).filter(
             DailyCandle.symbol == symbol,
             DailyCandle.date >= start_date,
