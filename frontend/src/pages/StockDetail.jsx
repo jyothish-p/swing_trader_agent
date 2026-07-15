@@ -54,23 +54,6 @@ export default function StockDetail() {
         if (isCancelled()) return;
         if (mateProRes?.data) {
           setMatePro(mateProRes.data);
-          const backtestStatus = mateProRes.data.backtest_report?.summary?.data_status;
-          if (effectiveRunId && backtestStatus === 'BACKTEST NOT RUN') {
-            setBacktestLoading(true);
-            getMatePro(symbol, effectiveRunId, true)
-              .then(fullRes => {
-                if (!isCancelled() && fullRes?.data) setMatePro(fullRes.data);
-              })
-              .catch(fullErr => {
-                console.error('Full backtest error:', fullErr.response?.status, fullErr.response?.data, fullErr.message);
-                if (!isCancelled()) {
-                  setMateProError(fullErr.response?.data?.detail || fullErr.message || 'Full backtest is taking longer than expected.');
-                }
-              })
-              .finally(() => {
-                if (!isCancelled()) setBacktestLoading(false);
-              });
-          }
         }
       } catch (mpErr) {
         console.error('MATE-PRO error:', mpErr.response?.status, mpErr.response?.data, mpErr.message);
@@ -86,6 +69,23 @@ export default function StockDetail() {
     setMateProLoading(false);
   }, [effectiveRunId, symbol, timeframe]);
 
+  const runFullBacktest = useCallback(async () => {
+    if (backtestLoading) return;
+    const status = matePro?.backtest_report?.summary?.data_status;
+    if (status && status !== 'BACKTEST NOT RUN') return;
+    setBacktestLoading(true);
+    setMateProError('');
+    try {
+      const fullRes = await getMatePro(symbol, effectiveRunId, true);
+      if (fullRes?.data) setMatePro(fullRes.data);
+    } catch (fullErr) {
+      console.error('Full backtest error:', fullErr.response?.status, fullErr.response?.data, fullErr.message);
+      setMateProError(fullErr.response?.data?.detail || fullErr.message || 'Full backtest is taking longer than expected.');
+    } finally {
+      setBacktestLoading(false);
+    }
+  }, [backtestLoading, effectiveRunId, matePro?.backtest_report?.summary?.data_status, symbol]);
+
   useEffect(() => {
     let cancelled = false;
     const timer = window.setTimeout(() => {
@@ -96,6 +96,12 @@ export default function StockDetail() {
       window.clearTimeout(timer);
     };
   }, [loadData]);
+
+  useEffect(() => {
+    if (activeTab === 'backtest' && matePro && !mateProLoading) {
+      runFullBacktest();
+    }
+  }, [activeTab, matePro, mateProLoading, runFullBacktest]);
 
   const ta = analysis?.analysis?.[timeframe] || analysis?.analysis?.daily || {};
   const chart = chartData?.chart_data || [];
@@ -152,7 +158,7 @@ export default function StockDetail() {
 
           {/* Tabs */}
           <div className="flex gap-1 border-b border-slate-700 overflow-x-auto">
-            {['mate-pro', 'report', 'chart', 'indicators', 'levels', 'history'].map(tab => (
+            {['mate-pro', 'report', 'chart', 'indicators', 'levels', 'history', 'backtest'].map(tab => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -288,10 +294,6 @@ export default function StockDetail() {
                   matePro={matePro}
                   onClose={() => setSelectedEngineKey(null)}
                 />
-              )}
-
-              {matePro.backtest_report && (
-                <CombinedBacktestReportCard report={matePro.backtest_report} isRefreshing={backtestLoading} />
               )}
 
               <div className={`rounded-lg border px-4 py-3 ${sectorMomentumTone}`}>
@@ -522,7 +524,7 @@ export default function StockDetail() {
 
           {/* Full Report Tab */}
           {activeTab === 'report' && matePro && (
-            <FullReport symbol={symbol} matePro={matePro} ta={ta} backtestLoading={backtestLoading} />
+            <FullReport symbol={symbol} matePro={matePro} ta={ta} />
           )}
 
           {activeTab === 'report' && !matePro && (
@@ -750,6 +752,36 @@ export default function StockDetail() {
               </table>
             </div>
           )}
+
+          {activeTab === 'backtest' && (
+            <div className="space-y-4">
+              {matePro?.backtest_report ? (
+                <CombinedBacktestReportCard
+                  report={matePro.backtest_report}
+                  isRefreshing={backtestLoading}
+                  error={mateProError}
+                  onRun={runFullBacktest}
+                />
+              ) : (
+                <div className="bg-slate-800 rounded-lg p-8 text-center">
+                  {mateProLoading || backtestLoading ? (
+                    <div className="flex flex-col items-center gap-3">
+                      <Loader2 className="h-7 w-7 animate-spin text-slate-400" />
+                      <p className="text-slate-400">Preparing full backtest report...</p>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={runFullBacktest}
+                      className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+                    >
+                      Run Backtest
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -786,7 +818,7 @@ function buildEngineChartData(model) {
   });
 }
 
-function FullReport({ symbol, matePro, ta, backtestLoading = false }) {
+function FullReport({ symbol, matePro, ta }) {
   const stockReport = buildStockReport(symbol, matePro, ta);
   const models = orderedModelEntries(matePro.models);
 
@@ -808,14 +840,12 @@ function FullReport({ symbol, matePro, ta, backtestLoading = false }) {
         ))}
       </div>
 
-      {matePro.backtest_report && (
-        <CombinedBacktestReportCard report={matePro.backtest_report} isRefreshing={backtestLoading} />
-      )}
     </div>
   );
 }
 
-function CombinedBacktestReportCard({ report, isRefreshing = false }) {
+function CombinedBacktestReportCard({ report, isRefreshing = false, error = '', onRun }) {
+  const hasRun = report.summary?.data_status && report.summary.data_status !== 'BACKTEST NOT RUN';
   return (
     <div className="bg-slate-800 rounded-lg p-5">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
@@ -832,6 +862,26 @@ function CombinedBacktestReportCard({ report, isRefreshing = false }) {
           <div>{report.summary?.grade || report.summary?.data_status || '-'}</div>
         </div>
       </div>
+      {!hasRun && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2">
+          <span className="text-xs text-slate-400">
+            {isRefreshing ? 'Full backtest is running. This can take around a minute.' : 'This is the fast dashboard snapshot. Run the full backtest to load historical validation.'}
+          </span>
+          <button
+            type="button"
+            onClick={onRun}
+            disabled={isRefreshing}
+            className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isRefreshing ? 'Running...' : 'Run Backtest'}
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+          {error}
+        </div>
+      )}
       <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950/50 p-3 font-mono text-xs leading-6 text-slate-200">
         {buildCombinedBacktestReport(report)}
       </pre>
@@ -921,6 +971,7 @@ function EngineFullReportPanel({ model, matePro, onClose }) {
               Component score chart is not available for this saved model snapshot.
             </div>
           )}
+
         </div>
 
         <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-4">
