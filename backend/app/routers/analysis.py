@@ -105,8 +105,8 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
         legacy_backtest = mate_pro.get("backtest") or {}
         backtest_report = {
             "title": "Combined Backtest Report",
-            "included_engine_count": 5,
-            "included_engines": ["TITAN v20", "TITAN v19", "Swing AI v12.2", "Swing AI v12.1", "KING v16"],
+            "included_engine_count": 6,
+            "included_engines": ["TITAN v20", "TITAN v19", "Swing AI v12.2", "Swing AI v12.1", "KING v16", "JP Pattern Engine v1"],
             "summary": legacy_backtest,
             "model_validations": [],
             "metrics": legacy_backtest.get("metrics") or {},
@@ -115,12 +115,13 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
             "penalty_reasons": [],
             "conclusion": "Legacy backtest snapshot converted to combined report format.",
         }
-    models = {
+    models = mate_pro.get("models") or {
         "titan": _snapshot_model("TITAN v20", scores.get("TITAN") or scores.get("TITAN_v20"), verdicts.get("TITAN") or verdicts.get("TITAN_v20")),
         "titan_v19": _snapshot_model("TITAN v19", scores.get("TITAN_v19"), verdicts.get("TITAN_v19")),
         "swing_ai_v12_2": _snapshot_model("Swing AI v12.2", scores.get("Swing_AI"), verdicts.get("Swing_AI")),
         "swing_ai_v12_1": _snapshot_model("Swing AI v12.1", scores.get("Swing_AI_Hyper"), verdicts.get("Swing_AI_Hyper")),
         "king": _snapshot_model("KING v16", scores.get("KING"), verdicts.get("KING")),
+        "jp_pattern_engine": _snapshot_model("JP Pattern Engine v1", scores.get("JP_Pattern"), verdicts.get("JP_Pattern")),
     }
     trigger = mate_pro.get("trigger")
     stop_loss = mate_pro.get("stop_loss")
@@ -229,6 +230,7 @@ def _apply_snapshot_mate_pro(result: dict, mate_pro: dict) -> dict:
         "swing_ai_v12_2": ("Swing_AI",),
         "swing_ai_v12_1": ("Swing_AI_Hyper",),
         "king": ("KING",),
+        "jp_pattern_engine": ("JP_Pattern",),
     }
     scores = mate_pro.get("model_scores") or {}
     verdicts = mate_pro.get("model_verdicts") or {}

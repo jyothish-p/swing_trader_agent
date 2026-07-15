@@ -718,6 +718,7 @@ const ENGINE_ORDER = [
   'swing_ai_v12_2',
   'swing_ai_v12_1',
   'king',
+  'jp_pattern_engine',
 ];
 
 function orderedModelEntries(models = {}) {
@@ -776,7 +777,7 @@ function CombinedBacktestReportCard({ report }) {
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-white">Combined Backtest Report</h3>
-          <p className="text-xs text-slate-400">Historical validation across the 5 engine models</p>
+          <p className="text-xs text-slate-400">Historical validation across the {report.included_engine_count || 6} engine models</p>
         </div>
         <div className="text-right text-xs text-slate-400">
           <div className="font-mono text-white">{report.summary?.backtest_score ?? '-'} / 20</div>
@@ -914,8 +915,8 @@ function buildStockReport(symbol, matePro, ta) {
     `- Timeframe analyzed: Daily primary with weekly/monthly context`,
     `- Overall trend: ${trendLabel(context, metrics)}`,
     `- Current price snapshot: ${formatMoney(matePro.cmp)}${matePro.timestamp ? ` as of ${formatTimestamp(matePro.timestamp)}` : ''}`,
-    `- Final model: 5-engine MATE-PRO consensus`,
-    `- Backtest validation: ${matePro.backtest_report ? 'combined report across all 5 engine models; not included in final verdict weightage' : 'not run for this dashboard snapshot'}`,
+    `- Final model: ${orderedModelEntries(matePro.models).length || 6}-engine MATE-PRO consensus`,
+    `- Backtest validation: ${matePro.backtest_report ? `combined report across all ${matePro.backtest_report.included_engine_count || 6} engine models; not included in final verdict weightage` : 'not run for this dashboard snapshot'}`,
     `- Final score: ${comp.composite_score ?? '-'} / 100`,
     `- Final verdict: ${comp.consensus_verdict || '-'} (${comp.agreement || 'agreement not available'})`,
     `- Trend summary: ${trendSummary(context, metrics, ta)}`,
@@ -1030,6 +1031,12 @@ function buildEngineReport(model, matePro) {
     lines.push(`- Historical metrics: win rate ${model.metrics.win_rate}%, avg R ${model.metrics.average_r_multiple ?? '-'}, false breakout ${model.metrics.false_breakout_rate ?? '-'}%.`);
   }
   if (model.positional_score != null) lines.push(`- Positional read: ${model.positional_score}/${model.positional_max || 30}${model.positional_class ? ` (${model.positional_class})` : ''}.`);
+  if ((model.top_patterns || []).length) {
+    lines.push(`- Top JP patterns: ${model.top_patterns.map(item => `${item.pattern} (${item.timeframe}, ${item.score}/10)`).join('; ')}.`);
+  }
+  if (model.timeframe_roles) {
+    lines.push(`- Timeframe roles: monthly ${model.timeframe_roles.monthly}; weekly ${model.timeframe_roles.weekly}; daily ${model.timeframe_roles.daily}.`);
+  }
 
   lines.push('', '### Verdict Reason');
   lines.push(`- ${engineOneLine(model, matePro)}`);

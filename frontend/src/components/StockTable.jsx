@@ -268,7 +268,7 @@ export default function StockTable({ stocks, runId, sortOrder = 'desc', onToggle
   return (
     <div>
       <div className="mb-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-        <span>Showing the full 5-engine verdict view for each screened stock. Live quotes refresh every 15 seconds.</span>
+        <span>Showing the full 6-engine verdict view for each screened stock. Live quotes refresh every 15 seconds.</span>
         <span className="rounded-full border border-sky-400/20 bg-sky-500/5 px-3 py-1 text-[11px] text-sky-300">
           Scroll sideways on smaller screens
         </span>

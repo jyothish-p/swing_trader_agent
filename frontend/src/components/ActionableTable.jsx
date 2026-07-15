@@ -274,7 +274,7 @@ export default function ActionableTable({ stocks, runId, sortOrder = 'desc', onT
   return (
     <div className="space-y-4">
       <div className="mb-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-        <span>Actionable rows stay sorted by the same equal-weight 5-engine composite.</span>
+        <span>Actionable rows stay sorted by the same equal-weight 6-engine composite.</span>
         <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-400">
           Scroll sideways on smaller screens
         </span>

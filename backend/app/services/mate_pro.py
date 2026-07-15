@@ -6,6 +6,7 @@ Implements the active MATE-PRO engines as mechanical scoring systems:
   3. Swing AI v12.2
   4. Swing AI v12.1
   5. KING v16
+  6. JP Pattern Engine v1
   Shared Backtest Validation (combined report; excluded from final verdict weightage)
 
 Each model takes the same raw technical data from our analysis engine and
@@ -186,7 +187,7 @@ def _peer_candle_frames(
 
 def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | None:
     """
-    Extract all raw technical data needed by the 3 scoring models.
+    Extract all raw technical data needed by the scoring models.
     Returns a comprehensive dict of metrics, or None if insufficient data.
     """
     lookback_days = 400 if mode == "batch" else 5 * 365 + 10
@@ -714,6 +715,14 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
             .reset_index()
             .rename(columns={"index": "date"})
         ),
+        "monthly_df": (
+            df.set_index(pd.to_datetime(df["date"]))[["open", "high", "low", "close", "volume"]]
+            .resample("ME")
+            .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+            .dropna()
+            .reset_index()
+            .rename(columns={"index": "date"})
+        ),
         **backtest_inputs,
     }
 
@@ -724,9 +733,10 @@ ACTIVE_ENGINE_KEYS = (
     "Swing_AI",
     "Swing_AI_Hyper",
     "KING",
+    "JP_Pattern",
 )
 
-MODEL_WEIGHTS = {key: 0.20 for key in ACTIVE_ENGINE_KEYS}
+MODEL_WEIGHTS = {key: 1 / len(ACTIVE_ENGINE_KEYS) for key in ACTIVE_ENGINE_KEYS}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -2271,6 +2281,381 @@ def _score_king(data: dict) -> dict:
 # ─────────────────────────────────────────────────
 # TRADE PLAN GENERATOR
 # ─────────────────────────────────────────────────
+def _safe_pct(new_value: float | None, old_value: float | None) -> float:
+    if old_value in (None, 0) or new_value is None:
+        return 0.0
+    return float((new_value / old_value - 1) * 100)
+
+
+def _frame_indicator_snapshot(frame: pd.DataFrame) -> dict:
+    if frame is None or frame.empty or len(frame) < 3:
+        return {
+            "rsi": None,
+            "rsi_prev": None,
+            "ema_6": None,
+            "ema_10": None,
+            "ema_20": None,
+            "macd_bull_cross": False,
+            "macd_histogram": None,
+            "vol_ratio": 0,
+            "range_pct": 0,
+        }
+
+    closes = frame["close"].astype(float).reset_index(drop=True)
+    highs = frame["high"].astype(float).reset_index(drop=True)
+    lows = frame["low"].astype(float).reset_index(drop=True)
+    volumes = frame["volume"].astype(float).reset_index(drop=True)
+    rsi_series = _calc_rsi(closes, 14)
+    macd = _calc_macd(closes, 12, 26, 9)
+    ema_6 = _calc_ema(closes, 6)
+    ema_10 = _calc_ema(closes, 10)
+    ema_20 = _calc_ema(closes, 20)
+    lookback = min(40, len(frame))
+    recent_high = float(highs.tail(lookback).max()) if lookback else 0
+    recent_low = float(lows.tail(lookback).min()) if lookback else 0
+    vol_window = min(20, len(frame))
+    avg_volume = float(volumes.tail(vol_window).mean()) if vol_window else 0
+    vol_ratio = float(volumes.iloc[-1] / avg_volume) if avg_volume > 0 else 0
+    hist = macd["histogram"]
+    macd_bull_cross = (
+        len(hist) >= 2
+        and not pd.isna(hist.iloc[-1])
+        and not pd.isna(hist.iloc[-2])
+        and float(hist.iloc[-1]) > 0
+        and float(hist.iloc[-2]) <= 0
+    )
+
+    return {
+        "rsi": None if pd.isna(rsi_series.iloc[-1]) else float(rsi_series.iloc[-1]),
+        "rsi_prev": None if len(rsi_series) < 2 or pd.isna(rsi_series.iloc[-2]) else float(rsi_series.iloc[-2]),
+        "ema_6": None if pd.isna(ema_6.iloc[-1]) else float(ema_6.iloc[-1]),
+        "ema_10": None if pd.isna(ema_10.iloc[-1]) else float(ema_10.iloc[-1]),
+        "ema_20": None if pd.isna(ema_20.iloc[-1]) else float(ema_20.iloc[-1]),
+        "macd_bull_cross": macd_bull_cross,
+        "macd_histogram": None if pd.isna(hist.iloc[-1]) else float(hist.iloc[-1]),
+        "vol_ratio": round(vol_ratio, 2),
+        "range_pct": round((recent_high - recent_low) / recent_low * 100, 2) if recent_low > 0 else 0,
+    }
+
+
+def _add_pattern_signal(signals: list[dict], pattern: str, timeframe: str, score: float, evidence: str) -> None:
+    signals.append({
+        "pattern": pattern,
+        "timeframe": timeframe,
+        "score": round(float(score), 1),
+        "evidence": evidence,
+    })
+
+
+def _detect_jp_pattern_signals(frame: pd.DataFrame, timeframe: str) -> list[dict]:
+    """Mechanical detector for the Top 12 JP swing patterns from the document."""
+    if frame is None or frame.empty or len(frame) < 12:
+        return []
+
+    frame = frame.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+    closes = frame["close"].astype(float)
+    highs = frame["high"].astype(float)
+    lows = frame["low"].astype(float)
+    opens = frame["open"].astype(float)
+    volumes = frame["volume"].astype(float)
+    n = len(frame)
+    latest_close = float(closes.iloc[-1])
+    latest_open = float(opens.iloc[-1])
+    snapshot = _frame_indicator_snapshot(frame)
+    signals: list[dict] = []
+
+    lookback = min(40, n)
+    recent_high = float(highs.tail(lookback).max())
+    recent_low = float(lows.tail(lookback).min())
+    range_pct = (recent_high - recent_low) / recent_low * 100 if recent_low > 0 else 0
+    recent_low_window = float(lows.tail(min(12, n)).min())
+    recent_range = (
+        (float(highs.tail(min(12, n)).max()) - recent_low_window) / recent_low_window * 100
+        if recent_low_window > 0 else 0
+    )
+    prior_slice = slice(max(0, n - 32), max(1, n - 12))
+    prior_low = float(lows.iloc[prior_slice].min()) if n >= 24 else 0
+    prior_range = (
+        (float(highs.iloc[prior_slice].max()) - prior_low) / prior_low * 100
+        if n >= 24 and prior_low > 0 else range_pct
+    )
+    avg_volume_20 = float(volumes.tail(min(20, n)).mean()) if n else 0
+    volume_contracting = n >= 24 and float(volumes.tail(10).mean()) < float(volumes.iloc[-24:-10].mean()) * 0.9
+    volume_expanding = avg_volume_20 > 0 and float(volumes.iloc[-1]) >= avg_volume_20 * 1.2
+
+    if n >= 30 and range_pct <= 18 and recent_range <= max(10, prior_range * 0.75):
+        score = 9 if volume_contracting else 7
+        _add_pattern_signal(signals, "Weekly VCP" if timeframe == "weekly" else "VCP", timeframe, score, "Volatility contraction with tightening recent range")
+
+    if n >= 30:
+        left_high = float(highs.iloc[-30:-22].max())
+        mid_low = float(lows.iloc[-22:-8].min())
+        right_high = float(highs.iloc[-8:].max())
+        handle_low = float(lows.tail(8).min())
+        handle_range = (float(highs.tail(8).max()) - handle_low) / handle_low * 100 if handle_low > 0 else 0
+        if mid_low <= left_high * 0.9 and right_high >= left_high * 0.94 and handle_range <= 10:
+            _add_pattern_signal(signals, "Cup & Handle", timeframe, 8.5, "Rounded base with right-side recovery and tight handle")
+
+    if n >= 24 and range_pct <= 14 and latest_close >= recent_high * 0.96:
+        _add_pattern_signal(signals, "Flat Base Breakout", timeframe, 8 if volume_expanding else 6.5, "Tight base near breakout level")
+
+    if n >= 32:
+        first_low = float(lows.iloc[-32:-18].min())
+        second_low = float(lows.iloc[-18:-5].min())
+        neckline = float(highs.iloc[-26:-5].max())
+        lows_match = abs(first_low - second_low) / max(first_low, second_low) <= 0.045
+        if lows_match and latest_close >= neckline * 0.96:
+            _add_pattern_signal(signals, "Double Bottom", timeframe, 8, "Two similar lows with neckline reclaim attempt")
+
+    if n >= 36:
+        left_shoulder = float(lows.iloc[-36:-26].min())
+        head = float(lows.iloc[-26:-14].min())
+        right_shoulder = float(lows.iloc[-14:-4].min())
+        neckline = float(highs.iloc[-30:-4].max())
+        shoulders_match = abs(left_shoulder - right_shoulder) / max(left_shoulder, right_shoulder) <= 0.08
+        if head < left_shoulder * 0.97 and head < right_shoulder * 0.97 and shoulders_match and latest_close >= neckline * 0.95:
+            _add_pattern_signal(signals, "Inverse Head & Shoulders", timeframe, 8, "Head lower than both shoulders with neckline pressure")
+
+    if n >= 24:
+        high_slope = float(highs.tail(8).mean() - highs.iloc[-24:-16].mean())
+        low_slope = float(lows.tail(8).mean() - lows.iloc[-24:-16].mean())
+        narrowing = recent_range < prior_range * 0.8 if prior_range else False
+        if high_slope < 0 and low_slope < 0 and narrowing and latest_close > float(highs.tail(8).max()) * 0.98:
+            _add_pattern_signal(signals, "Falling Wedge Breakout", timeframe, 8.5, "Downward narrowing structure with reclaim near wedge top")
+
+    if n >= 24:
+        impulse = _safe_pct(float(closes.iloc[-12]), float(closes.iloc[-24]))
+        pullback_depth = _safe_pct(float(lows.tail(10).min()), float(highs.iloc[-14:-8].max()))
+        if impulse >= 10 and pullback_depth >= -12 and recent_range <= 12:
+            _add_pattern_signal(signals, "Bull Flag", timeframe, 7.5, "Impulse move followed by shallow tight consolidation")
+
+    if n >= 30:
+        base_support = float(lows.iloc[-30:-6].min())
+        spring_low = float(lows.tail(6).min())
+        sos_high = float(highs.iloc[-30:-6].max())
+        if spring_low < base_support * 0.985 and latest_close > base_support and latest_close >= sos_high * 0.94:
+            _add_pattern_signal(signals, "Wyckoff Spring to SOS", timeframe, 9, "Support undercut reclaimed with strength near SOS zone")
+
+    ema_20 = snapshot["ema_20"]
+    if ema_20 and latest_close > ema_20 and float(lows.iloc[-1]) <= ema_20 * 1.02 and latest_close > latest_open:
+        label = "Weekly 20 MA Touch & Bounce" if timeframe == "weekly" else "20 MA Touch & Bounce"
+        _add_pattern_signal(signals, label, timeframe, 7.5, "Price touched the 20-period average and closed back above it")
+
+    if n >= 24:
+        sweep_support = float(lows.iloc[-24:-4].min())
+        sweep_low = float(lows.tail(4).min())
+        if sweep_low < sweep_support * 0.99 and latest_close > sweep_support:
+            _add_pattern_signal(signals, "Liquidity Sweep + Reclaim", timeframe, 8.5, "Recent low swept prior support and reclaimed it")
+
+    if snapshot["macd_bull_cross"] and (range_pct <= 18 or recent_range <= 10):
+        _add_pattern_signal(signals, "MACD Fresh Bullish Crossover After Compression", timeframe, 8, "MACD histogram crossed positive after a compressed range")
+
+    rsi = snapshot["rsi"]
+    rsi_prev = snapshot["rsi_prev"]
+    if rsi is not None and rsi_prev is not None and rsi >= 60 and rsi_prev < 60 and volume_expanding:
+        _add_pattern_signal(signals, "RSI 60 Reclaim + Volume Expansion", timeframe, 8.5, "RSI reclaimed 60 with expanding live volume")
+
+    signals.sort(key=lambda item: item["score"], reverse=True)
+    return signals[:6]
+
+
+def _score_jp_pattern_engine(data: dict) -> dict:
+    """
+    JP Pattern Engine v1.
+    Implements the sixth-engine document: monthly primary trend, weekly pattern
+    selection, daily entry confirmation, and the Top 12 JP momentum swing patterns.
+    """
+    daily_df = data.get("candles_df") if isinstance(data.get("candles_df"), pd.DataFrame) else pd.DataFrame()
+    weekly_df = data.get("weekly_df") if isinstance(data.get("weekly_df"), pd.DataFrame) else pd.DataFrame()
+    monthly_df = data.get("monthly_df") if isinstance(data.get("monthly_df"), pd.DataFrame) else pd.DataFrame()
+
+    daily_signals = _detect_jp_pattern_signals(daily_df, "daily")
+    weekly_signals = _detect_jp_pattern_signals(weekly_df, "weekly")
+    monthly_signals = _detect_jp_pattern_signals(monthly_df, "monthly")
+    all_signals = monthly_signals + weekly_signals + daily_signals
+    top_patterns = sorted(all_signals, key=lambda item: item["score"], reverse=True)[:8]
+    active_timeframes = {signal["timeframe"] for signal in all_signals}
+
+    monthly_snapshot = _frame_indicator_snapshot(monthly_df)
+    weekly_snapshot = _frame_indicator_snapshot(weekly_df)
+    daily_snapshot = _frame_indicator_snapshot(daily_df)
+    cmp = data["cmp"]
+
+    m1 = 0
+    if monthly_df is not None and len(monthly_df) >= 6:
+        monthly_close = float(monthly_df["close"].astype(float).iloc[-1])
+        if monthly_snapshot["ema_6"] and monthly_close > monthly_snapshot["ema_6"]:
+            m1 += 4
+        if monthly_snapshot["ema_10"] and monthly_close > monthly_snapshot["ema_10"]:
+            m1 += 3
+        if len(monthly_df) >= 4 and monthly_close > float(monthly_df["close"].astype(float).iloc[-4]):
+            m1 += 3
+        if monthly_snapshot["rsi"] and monthly_snapshot["rsi"] >= 55:
+            m1 += 3
+        if monthly_signals:
+            m1 += 2
+    elif data["weekly_bias"] == "bullish":
+        m1 = 7
+    m1 = min(15, m1)
+
+    w1 = 0
+    if weekly_signals:
+        w1 += min(16, weekly_signals[0]["score"] * 1.8)
+        if len(weekly_signals) >= 2:
+            w1 += 3
+    if data["weekly_structure"] == "HH/HL":
+        w1 += 3
+    elif data["weekly_structure"] == "range":
+        w1 += 1.5
+    if weekly_snapshot["rsi"] and weekly_snapshot["rsi"] >= 60:
+        w1 += 3
+    w1 = min(25, w1)
+
+    d1 = 0
+    if daily_signals:
+        d1 += min(10, daily_signals[0]["score"] * 1.15)
+    if data["macd_crossover"] or daily_snapshot["macd_bull_cross"]:
+        d1 += 3
+    if data["rsi"] and data["rsi"] >= 60:
+        d1 += 3
+    elif data["rsi"] and data["rsi"] >= 55:
+        d1 += 2
+    if data["close_position"] >= 0.65:
+        d1 += 2
+    if data["trigger"] and cmp >= data["trigger"] * 0.97:
+        d1 += 2
+    d1 = min(20, d1)
+
+    unique_patterns = {signal["pattern"] for signal in all_signals}
+    p1 = min(8, len(unique_patterns) * 1.6)
+    if "weekly" in active_timeframes:
+        p1 += 3
+    if "daily" in active_timeframes:
+        p1 += 2
+    if "monthly" in active_timeframes:
+        p1 += 2
+    p1 = min(15, p1)
+
+    v1 = 0
+    if data["vol_ratio"] >= 1.8:
+        v1 += 5
+    elif data["vol_ratio"] >= 1.2:
+        v1 += 3
+    if data["base_contraction"]:
+        v1 += 3
+    if data["delivery_trend"] in ("improving", "strong") or data["delivery_proxy"] == "supportive":
+        v1 += 3
+    if data["value_10d_cr"] >= 50:
+        v1 += 2
+    elif data["value_10d_cr"] >= 10:
+        v1 += 1
+    if data["volatility_state"] in ("contracting", "expanding"):
+        v1 += 2
+    v1 = min(15, v1)
+
+    r1 = 0
+    if 0 < data["sl_pct"] <= 4:
+        r1 += 3
+    elif data["sl_pct"] <= 6:
+        r1 += 2
+    elif data["sl_pct"] <= 8:
+        r1 += 1
+    if data["overhead_supply"] == "open_air":
+        r1 += 3
+    elif data["overhead_supply"] == "light":
+        r1 += 2
+    elif data["overhead_supply"] == "moderate":
+        r1 += 1
+    if len(daily_df) >= 180:
+        r1 += 2
+    elif len(daily_df) >= 60:
+        r1 += 1
+    if len(weekly_df) >= 30:
+        r1 += 1
+    if len(monthly_df) >= 12:
+        r1 += 1
+    r1 = min(10, r1)
+
+    raw_score = round(m1 + w1 + d1 + p1 + v1 + r1, 1)
+    penalties = 0
+    penalty_reasons = []
+    if not top_patterns:
+        penalties += 10
+        penalty_reasons.append("No JP Top-12 pattern confirmed on live candles")
+    if data["extension_pct"] > 5:
+        penalties += 8
+        penalty_reasons.append("CMP more than 5% above trigger")
+    elif data["extension_pct"] > 3:
+        penalties += 4
+        penalty_reasons.append("CMP more than 3% above trigger")
+    if data["sl_pct"] > 9:
+        penalties += 8
+        penalty_reasons.append("Stop loss too wide for 10-25% swing target")
+    elif data["sl_pct"] > 7:
+        penalties += 4
+        penalty_reasons.append("Stop loss is wider than ideal")
+    if data["overhead_supply"] == "heavy":
+        penalties += 5
+        penalty_reasons.append("Heavy overhead supply blocks clean swing runway")
+    if data["weak_close"] or data["upper_wick_heavy"]:
+        penalties += 4
+        penalty_reasons.append("Weak close or heavy upper wick on latest candle")
+    if data["weekly_bias"] == "bearish" and not weekly_signals:
+        penalties += 6
+        penalty_reasons.append("Weekly structure is bearish without a reversal pattern")
+
+    final_score = round(max(0, raw_score - penalties), 1)
+    probability = round(_clamp(final_score + (3 if len(active_timeframes) >= 2 else 0), 25, 92), 1)
+
+    if penalties >= 18 or final_score < 45:
+        verdict = "AVOID"
+    elif final_score >= 82 and data["sl_pct"] <= 6 and data["extension_pct"] <= 3:
+        verdict = "STRONG BUY"
+    elif final_score >= 72 and data["sl_pct"] <= 7:
+        verdict = "BUY"
+    elif final_score >= 62:
+        verdict = "HOLD"
+    elif final_score >= 52:
+        verdict = "WAIT"
+    else:
+        verdict = "AVOID"
+
+    return {
+        "model": "JP Pattern Engine v1",
+        "scanner_score": final_score,
+        "selection_total": final_score,
+        "scanner_raw": raw_score,
+        "penalties": penalties,
+        "penalty_reasons": penalty_reasons,
+        "components": {
+            "M1_monthly_primary_trend": {"score": round(m1, 1), "max": 15},
+            "W1_weekly_pattern_quality": {"score": round(w1, 1), "max": 25},
+            "D1_daily_entry_confirmation": {"score": round(d1, 1), "max": 20},
+            "P1_top_12_pattern_breadth": {"score": round(p1, 1), "max": 15},
+            "V1_volume_delivery": {"score": round(v1, 1), "max": 15},
+            "R1_risk_runway_data": {"score": round(r1, 1), "max": 10},
+        },
+        "top_patterns": top_patterns,
+        "pattern_stack": {
+            "monthly": monthly_signals,
+            "weekly": weekly_signals,
+            "daily": daily_signals,
+        },
+        "timeframe_roles": {
+            "monthly": "primary trend and multibagger structure",
+            "weekly": "main stock-selection and pattern-detection chart",
+            "daily": "precise entry, stop loss and breakout confirmation",
+        },
+        "monthly_rsi": round(monthly_snapshot["rsi"], 2) if monthly_snapshot["rsi"] is not None else None,
+        "weekly_rsi": round(weekly_snapshot["rsi"], 2) if weekly_snapshot["rsi"] is not None else None,
+        "daily_rsi": round(daily_snapshot["rsi"], 2) if daily_snapshot["rsi"] is not None else None,
+        "probability_pct": probability,
+        "final_probability": probability,
+        "verdict": verdict,
+        "selection_grade": "A+" if final_score >= 85 else "A" if final_score >= 72 else "B" if final_score >= 58 else "SKIP",
+        "selection_action": "TRADE" if verdict in ("BUY", "STRONG BUY") else "WAIT RETEST" if verdict in ("HOLD", "WAIT") else "SKIP",
+    }
+
 
 def _backtest_setup_family(pattern_name: str | None) -> str:
     if pattern_name in ("pullback_ema20", "bull_flag"):
@@ -3018,7 +3403,7 @@ def _build_combined_backtest_report(models: dict[str, dict], backtest: dict) -> 
     elif conflicts:
         conclusion = "Historical validation conflicts with one or more bullish engine reads."
     elif confirmed >= 3:
-        conclusion = "Historical validation broadly supports the five-engine read."
+        conclusion = "Historical validation broadly supports the six-engine read."
     elif conditional:
         conclusion = "Historical validation is usable but needs live confirmation."
     else:
@@ -3263,17 +3648,18 @@ def _generate_one_line_verdict(
 
 
 # ─────────────────────────────────────────────────
-# COMPOSITE ACROSS FIVE VERDICT ENGINES
+# COMPOSITE ACROSS SIX VERDICT ENGINES
 # ─────────────────────────────────────────────────
 
 def _compute_composite(models: dict[str, dict]) -> dict:
-    """Compute the equal-weight composite across the five verdict engines."""
+    """Compute the equal-weight composite across the six verdict engines."""
     score_map = {
         "TITAN": models["titan"]["scanner_score"],
         "TITAN_v19": models["titan_v19"]["scanner_score"],
         "Swing_AI": models["swing_ai_v12_2"]["selection_total"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["selection_total"],
         "KING": models["king"]["scanner_score"],
+        "JP_Pattern": models["jp_pattern_engine"]["scanner_score"],
     }
     probability_map = {
         "TITAN": models["titan"]["probability_pct"],
@@ -3281,6 +3667,7 @@ def _compute_composite(models: dict[str, dict]) -> dict:
         "Swing_AI": models["swing_ai_v12_2"]["final_probability"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["final_probability"],
         "KING": models["king"]["probability_pct"],
+        "JP_Pattern": models["jp_pattern_engine"]["probability_pct"],
     }
     verdict_map = {
         "TITAN": models["titan"]["verdict"],
@@ -3288,6 +3675,7 @@ def _compute_composite(models: dict[str, dict]) -> dict:
         "Swing_AI": models["swing_ai_v12_2"]["verdict"],
         "Swing_AI_Hyper": models["swing_ai_v12_1"]["verdict"],
         "KING": models["king"]["verdict"],
+        "JP_Pattern": models["jp_pattern_engine"]["verdict"],
     }
 
     composite_score = round(sum(score_map[key] * MODEL_WEIGHTS[key] for key in MODEL_WEIGHTS), 1)
@@ -3370,6 +3758,7 @@ def run_mate_pro_analysis(
     swing_ai = _score_swing_ai_v12_2(raw)
     swing_ai_hyper = _score_swing_ai_v12_1(raw)
     king = _score_king(raw)
+    jp_pattern = _score_jp_pattern_engine(raw)
     backtest = _backtest_not_run_result() if mode == "batch" else _score_backtest_engine(raw)
     models = _attach_backtest_validation({
         "titan": titan,
@@ -3377,6 +3766,7 @@ def run_mate_pro_analysis(
         "swing_ai_v12_2": swing_ai,
         "swing_ai_v12_1": swing_ai_hyper,
         "king": king,
+        "jp_pattern_engine": jp_pattern,
     }, backtest)
     backtest_report = _build_combined_backtest_report(models, backtest)
 

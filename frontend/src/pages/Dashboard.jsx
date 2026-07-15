@@ -114,7 +114,7 @@ export default function Dashboard() {
     try {
       const res = await getScreenerResults(runId);
       if (res.data?.full_engine_complete === false) {
-        setError('This run does not contain full 5-engine results. Start a fresh screener run after the latest deploy.');
+        setError('This run does not contain full 6-engine results. Start a fresh screener run after the latest deploy.');
         setLoading(false);
         setStatus('');
         setActiveRunId(null);
@@ -195,7 +195,7 @@ export default function Dashboard() {
             const payload = data.result || (await getScreenerResults(activeRunId)).data;
             if (cancelled) return;
             if (payload?.full_engine_complete === false) {
-              setError('This run only has base screener rows. Please run the screener again for full 5-engine results.');
+              setError('This run only has base screener rows. Please run the screener again for full 6-engine results.');
               setStatus('');
               setLoading(false);
               setActiveRunId(null);
@@ -359,10 +359,10 @@ export default function Dashboard() {
               </span>
             </div>
             <p className="text-base text-slate-300">
-              Top NSE stocks scored equally by TITAN v20, TITAN v19, Swing AI v12.2, Swing AI v12.1 and KING v16.
+              Top NSE stocks scored equally by TITAN v20, TITAN v19, Swing AI v12.2, Swing AI v12.1, KING v16 and JP Pattern Engine v1.
             </p>
             <p className="mt-3 text-sm text-slate-500">
-              Full 5-engine scoring, live quotes and run snapshots in one dark terminal-style workspace. Backtest is a separate report check.
+              Full 6-engine scoring, live quotes and run snapshots in one dark terminal-style workspace. Backtest is a separate report check.
             </p>
           </div>
           <div className="flex flex-wrap gap-3 xl:justify-end">
