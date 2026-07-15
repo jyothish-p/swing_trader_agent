@@ -6,7 +6,7 @@ Implements the active MATE-PRO engines as mechanical scoring systems:
   3. Swing AI v12.2
   4. Swing AI v12.1
   5. KING v16
-  6. Backtest Engine (informational; excluded from final verdict weightage)
+  Shared Backtest Validation (combined report; excluded from final verdict weightage)
 
 Each model takes the same raw technical data from our analysis engine and
 applies its own scoring formula to produce scores, verdicts, and trade plans.
@@ -2682,7 +2682,7 @@ def _score_backtest_engine(data: dict) -> dict:
     }
     if raw_df is None or raw_df.empty:
         return {
-            "model": "Backtest Engine",
+            "model": "Combined Backtest Validation",
             "scanner_score": 0,
             "backtest_score": 0,
             "quality_grade": "Poor",
@@ -2865,7 +2865,7 @@ def _score_backtest_engine(data: dict) -> dict:
         verdict = "AVOID"
 
     return _to_python({
-        "model": "Backtest Engine",
+        "model": "Combined Backtest Validation",
         "scanner_score": final_score,
         "scanner_raw": base_score,
         "backtest_score": backtest_score,
@@ -2929,7 +2929,7 @@ def _score_backtest_engine(data: dict) -> dict:
 
 def _backtest_not_run_result(reason: str = "Backtest skipped for batch speed") -> dict:
     return {
-        "model": "Backtest Engine",
+        "model": "Combined Backtest Validation",
         "scanner_score": None,
         "backtest_score": None,
         "quality_grade": "Not run",
@@ -2942,6 +2942,99 @@ def _backtest_not_run_result(reason: str = "Backtest skipped for batch speed") -
         "penalty_reasons": [reason],
         "probability_pct": None,
         "verdict": "INFO",
+    }
+
+
+def _backtest_validation_summary(backtest: dict) -> dict:
+    metrics = backtest.get("metrics") or {}
+    data_quality = backtest.get("data_quality") or {}
+    return {
+        "score": backtest.get("scanner_score"),
+        "backtest_score": backtest.get("backtest_score"),
+        "grade": backtest.get("quality_grade"),
+        "data_status": backtest.get("data_status"),
+        "setup_family": backtest.get("setup_family"),
+        "sample_size": backtest.get("sample_size"),
+        "same_stock_sample_size": backtest.get("same_stock_sample_size"),
+        "peer_sample_size": backtest.get("peer_sample_size"),
+        "win_rate": metrics.get("win_rate"),
+        "average_r_multiple": metrics.get("average_r_multiple"),
+        "false_breakout_rate": metrics.get("false_breakout_rate"),
+        "expectancy_per_trade": metrics.get("expectancy_per_trade"),
+        "data_quality": data_quality,
+    }
+
+
+def _model_backtest_alignment(model: dict, backtest: dict) -> str:
+    grade = backtest.get("quality_grade")
+    verdict = model.get("verdict")
+    if backtest.get("data_status") == "BACKTEST NOT RUN":
+        return "NOT RUN"
+    if grade in ("Excellent", "Good") and verdict in ("STRONG BUY", "BUY", "HOLD"):
+        return "CONFIRMS"
+    if grade in ("Weak", "Poor") and verdict in ("STRONG BUY", "BUY"):
+        return "CONFLICTS"
+    if grade == "Average":
+        return "CONDITIONAL"
+    if grade in ("Weak", "Poor") and verdict in ("WAIT", "AVOID"):
+        return "CONFIRMS CAUTION"
+    return "NEUTRAL"
+
+
+def _attach_backtest_validation(models: dict[str, dict], backtest: dict) -> dict[str, dict]:
+    summary = _backtest_validation_summary(backtest)
+    for model in models.values():
+        model["backtest_validation"] = {
+            **summary,
+            "alignment": _model_backtest_alignment(model, backtest),
+        }
+    return models
+
+
+def _build_combined_backtest_report(models: dict[str, dict], backtest: dict) -> dict:
+    summary = _backtest_validation_summary(backtest)
+    model_validations = []
+    for key, model in models.items():
+        validation = model.get("backtest_validation") or {
+            **summary,
+            "alignment": _model_backtest_alignment(model, backtest),
+        }
+        model_validations.append({
+            "key": key,
+            "model": model.get("model"),
+            "model_score": model.get("scanner_score") or model.get("selection_total") or model.get("final_probability"),
+            "model_verdict": model.get("verdict"),
+            "alignment": validation.get("alignment"),
+        })
+
+    alignments = [item["alignment"] for item in model_validations]
+    confirmed = len([item for item in alignments if item in ("CONFIRMS", "CONFIRMS CAUTION")])
+    conflicts = len([item for item in alignments if item == "CONFLICTS"])
+    conditional = len([item for item in alignments if item == "CONDITIONAL"])
+    data_status = backtest.get("data_status")
+
+    if data_status == "BACKTEST NOT RUN":
+        conclusion = "Backtest validation was not run for this batch snapshot."
+    elif conflicts:
+        conclusion = "Historical validation conflicts with one or more bullish engine reads."
+    elif confirmed >= 3:
+        conclusion = "Historical validation broadly supports the five-engine read."
+    elif conditional:
+        conclusion = "Historical validation is usable but needs live confirmation."
+    else:
+        conclusion = "Historical validation is mixed or limited by missing data."
+
+    return {
+        "title": "Combined Backtest Report",
+        "included_engine_count": len(models),
+        "included_engines": [item["model"] for item in model_validations],
+        "summary": summary,
+        "model_validations": model_validations,
+        "metrics": backtest.get("metrics") or {},
+        "data_quality": backtest.get("data_quality") or {},
+        "penalties": backtest.get("penalties", 0),
+        "penalty_reasons": backtest.get("penalty_reasons") or [],
+        "conclusion": conclusion,
     }
 
 
@@ -3278,18 +3371,20 @@ def run_mate_pro_analysis(
     swing_ai_hyper = _score_swing_ai_v12_1(raw)
     king = _score_king(raw)
     backtest = _backtest_not_run_result() if mode == "batch" else _score_backtest_engine(raw)
-
-    # Generate trade plans
-    trade_plans = _generate_trade_plan(raw)
-
-    # Compute composite
-    composite = _compute_composite({
+    models = _attach_backtest_validation({
         "titan": titan,
         "titan_v19": titan_v19,
         "swing_ai_v12_2": swing_ai,
         "swing_ai_v12_1": swing_ai_hyper,
         "king": king,
-    })
+    }, backtest)
+    backtest_report = _build_combined_backtest_report(models, backtest)
+
+    # Generate trade plans
+    trade_plans = _generate_trade_plan(raw)
+
+    # Compute composite
+    composite = _compute_composite(models)
     fallback_one_line_verdict = _generate_one_line_verdict(symbol, raw, titan, swing_ai, king, backtest, composite, trade_plans)
     if allow_llm_verdict:
         one_line_verdict, one_line_verdict_source = generate_llm_one_line_verdict(
@@ -3373,14 +3468,8 @@ def run_mate_pro_analysis(
         },
 
         # Model scores
-        "models": {
-            "titan": titan,
-            "titan_v19": titan_v19,
-            "swing_ai_v12_2": swing_ai,
-            "swing_ai_v12_1": swing_ai_hyper,
-            "king": king,
-            **({"backtest": backtest} if mode != "batch" else {}),
-        },
+        "models": models,
+        "backtest_report": backtest_report,
 
         # Composite
         "composite": composite,

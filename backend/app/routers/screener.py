@@ -277,7 +277,6 @@ def _ensure_complete_mate_pro_payload(db: Session, run_id: str, payload: dict) -
 def _mp_summary(mp: dict) -> dict:
     titan = (mp.get("models") or {}).get("titan") or {}
     titan_v19 = (mp.get("models") or {}).get("titan_v19") or {}
-    backtest = (mp.get("models") or {}).get("backtest") or {}
     return {
         "composite_score": mp["composite"]["composite_score"],
         "composite_probability": mp["composite"]["composite_probability"],
@@ -323,18 +322,7 @@ def _mp_summary(mp: dict) -> dict:
             "selection_action": titan_v19.get("selection_action"),
             "setup_family": titan_v19.get("setup_family"),
         },
-        "backtest": {
-            "model": backtest.get("model"),
-            "backtest_score": backtest.get("backtest_score"),
-            "quality_grade": backtest.get("quality_grade"),
-            "data_status": backtest.get("data_status"),
-            "setup_family": backtest.get("setup_family"),
-            "sample_size": backtest.get("sample_size"),
-            "same_stock_sample_size": backtest.get("same_stock_sample_size"),
-            "peer_sample_size": backtest.get("peer_sample_size"),
-            "data_quality": backtest.get("data_quality"),
-            "metrics": backtest.get("metrics"),
-        },
+        "backtest_report": mp.get("backtest_report"),
     }
 
 

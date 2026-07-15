@@ -260,6 +260,10 @@ export default function StockDetail() {
                 />
               )}
 
+              {matePro.backtest_report && (
+                <CombinedBacktestReportCard report={matePro.backtest_report} />
+              )}
+
               <div className={`rounded-lg border px-4 py-3 ${sectorMomentumTone}`}>
                 <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                   <div>
@@ -714,7 +718,6 @@ const ENGINE_ORDER = [
   'swing_ai_v12_2',
   'swing_ai_v12_1',
   'king',
-  'backtest',
 ];
 
 function orderedModelEntries(models = {}) {
@@ -759,6 +762,30 @@ function FullReport({ symbol, matePro, ta }) {
           <EngineReportCard key={key} model={model} matePro={matePro} />
         ))}
       </div>
+
+      {matePro.backtest_report && (
+        <CombinedBacktestReportCard report={matePro.backtest_report} />
+      )}
+    </div>
+  );
+}
+
+function CombinedBacktestReportCard({ report }) {
+  return (
+    <div className="bg-slate-800 rounded-lg p-5">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Combined Backtest Report</h3>
+          <p className="text-xs text-slate-400">Historical validation across the 5 engine models</p>
+        </div>
+        <div className="text-right text-xs text-slate-400">
+          <div className="font-mono text-white">{report.summary?.backtest_score ?? '-'} / 20</div>
+          <div>{report.summary?.grade || report.summary?.data_status || '-'}</div>
+        </div>
+      </div>
+      <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950/50 p-3 font-mono text-xs leading-6 text-slate-200">
+        {buildCombinedBacktestReport(report)}
+      </pre>
     </div>
   );
 }
@@ -888,7 +915,7 @@ function buildStockReport(symbol, matePro, ta) {
     `- Overall trend: ${trendLabel(context, metrics)}`,
     `- Current price snapshot: ${formatMoney(matePro.cmp)}${matePro.timestamp ? ` as of ${formatTimestamp(matePro.timestamp)}` : ''}`,
     `- Final model: 5-engine MATE-PRO consensus`,
-    `- Backtest Engine: ${matePro.models?.backtest ? 'separate historical validation, not included in final verdict weightage' : 'not run for this dashboard snapshot'}`,
+    `- Backtest validation: ${matePro.backtest_report ? 'combined report across all 5 engine models; not included in final verdict weightage' : 'not run for this dashboard snapshot'}`,
     `- Final score: ${comp.composite_score ?? '-'} / 100`,
     `- Final verdict: ${comp.consensus_verdict || '-'} (${comp.agreement || 'agreement not available'})`,
     `- Trend summary: ${trendSummary(context, metrics, ta)}`,
@@ -936,7 +963,11 @@ function buildStockReport(symbol, matePro, ta) {
       `- ${model.model}: ${getModelScore(model)}/100, ${model.verdict || '-'} - ${engineOneLine(model, matePro)}`
     )),
     '',
-    '### 9. Final View',
+    '',
+    '### 9. Combined Backtest Report',
+    ...(matePro.backtest_report ? buildCombinedBacktestReport(matePro.backtest_report).split('\n').map(line => line ? `- ${line}` : '') : ['- Backtest validation is not available for this snapshot.']),
+    '',
+    '### 10. Final View',
     `- ${matePro.one_line_verdict || finalView(matePro)}`,
   ].join('\n');
 }
@@ -955,6 +986,10 @@ function buildEngineReport(model, matePro) {
 
   if (model.selection_grade || model.selection_action || model.liquidity_gate) {
     lines.push(`- Gate / action: ${model.liquidity_gate || '-'} gate, ${model.selection_grade || '-'} grade, ${model.selection_action || '-'} action`);
+  }
+  if (model.backtest_validation) {
+    const validation = model.backtest_validation;
+    lines.push(`- Backtest validation: ${validation.alignment || '-'}; combined grade ${validation.grade || '-'}, sample ${validation.sample_size ?? 0}, win rate ${validation.win_rate ?? '-'}%.`);
   }
 
   lines.push('', '### Why The Score Came Out This Way');
@@ -999,6 +1034,31 @@ function buildEngineReport(model, matePro) {
   lines.push('', '### Verdict Reason');
   lines.push(`- ${engineOneLine(model, matePro)}`);
 
+  return lines.join('\n');
+}
+
+function buildCombinedBacktestReport(report = {}) {
+  const summary = report.summary || {};
+  const metrics = report.metrics || {};
+  const quality = report.data_quality || summary.data_quality || {};
+  const validations = report.model_validations || [];
+  const lines = [
+    `Conclusion: ${report.conclusion || '-'}`,
+    `Included engines: ${(report.included_engines || []).join(', ') || '-'}`,
+    `Backtest score: ${summary.backtest_score ?? '-'} / 20; grade ${summary.grade || '-'}; status ${summary.data_status || '-'}`,
+    `Samples: total ${summary.sample_size ?? 0}, same-stock ${summary.same_stock_sample_size ?? 0}, similar-peer ${summary.peer_sample_size ?? 0}`,
+    `Metrics: win rate ${metrics.win_rate ?? summary.win_rate ?? '-'}%, avg R ${metrics.average_r_multiple ?? summary.average_r_multiple ?? '-'}, false breakout ${metrics.false_breakout_rate ?? summary.false_breakout_rate ?? '-'}%, expectancy ${metrics.expectancy_per_trade ?? summary.expectancy_per_trade ?? '-'}R`,
+    `Data quality: ${quality.daily_bars ?? '-'} daily bars; 1Y ${yesNo(quality.min_1y_daily_ohlcv)}, 3Y ${yesNo(quality.ideal_3y_daily_ohlcv)}, weekly ${yesNo(quality.weekly_ohlcv)}, delivery ${yesNo(quality.delivery_history)}, NIFTY ${yesNo(quality.nifty_history)}, sector index ${yesNo(quality.sector_index_history)}, peer sets ${quality.similar_sector_peers ?? 0}`,
+  ];
+  if (validations.length) {
+    lines.push('Engine validation:');
+    validations.forEach(item => {
+      lines.push(`${item.model || item.key}: ${item.alignment || '-'} against historical setup validation`);
+    });
+  }
+  if ((report.penalty_reasons || []).length) {
+    lines.push(`Confidence reductions: ${report.penalty_reasons.join('; ')}`);
+  }
   return lines.join('\n');
 }
 

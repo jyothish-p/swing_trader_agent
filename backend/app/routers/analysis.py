@@ -100,7 +100,21 @@ def _snapshot_model(name: str, score: float | None, verdict: str | None) -> dict
 def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
     scores = mate_pro.get("model_scores") or {}
     verdicts = mate_pro.get("model_verdicts") or {}
-    backtest_summary = mate_pro.get("backtest") or {}
+    backtest_report = mate_pro.get("backtest_report")
+    if not backtest_report and mate_pro.get("backtest"):
+        legacy_backtest = mate_pro.get("backtest") or {}
+        backtest_report = {
+            "title": "Combined Backtest Report",
+            "included_engine_count": 5,
+            "included_engines": ["TITAN v20", "TITAN v19", "Swing AI v12.2", "Swing AI v12.1", "KING v16"],
+            "summary": legacy_backtest,
+            "model_validations": [],
+            "metrics": legacy_backtest.get("metrics") or {},
+            "data_quality": legacy_backtest.get("data_quality") or {},
+            "penalties": 0,
+            "penalty_reasons": [],
+            "conclusion": "Legacy backtest snapshot converted to combined report format.",
+        }
     models = {
         "titan": _snapshot_model("TITAN v20", scores.get("TITAN") or scores.get("TITAN_v20"), verdicts.get("TITAN") or verdicts.get("TITAN_v20")),
         "titan_v19": _snapshot_model("TITAN v19", scores.get("TITAN_v19"), verdicts.get("TITAN_v19")),
@@ -108,19 +122,6 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
         "swing_ai_v12_1": _snapshot_model("Swing AI v12.1", scores.get("Swing_AI_Hyper"), verdicts.get("Swing_AI_Hyper")),
         "king": _snapshot_model("KING v16", scores.get("KING"), verdicts.get("KING")),
     }
-    if "BACKTEST" in scores or backtest_summary.get("backtest_score") is not None:
-        models["backtest"] = {
-            **_snapshot_model("Backtest Engine", scores.get("BACKTEST"), verdicts.get("BACKTEST")),
-            "backtest_score": backtest_summary.get("backtest_score"),
-            "quality_grade": backtest_summary.get("quality_grade"),
-            "data_status": backtest_summary.get("data_status"),
-            "setup_family": backtest_summary.get("setup_family"),
-            "sample_size": backtest_summary.get("sample_size"),
-            "same_stock_sample_size": backtest_summary.get("same_stock_sample_size"),
-            "peer_sample_size": backtest_summary.get("peer_sample_size"),
-            "data_quality": backtest_summary.get("data_quality"),
-            "metrics": backtest_summary.get("metrics"),
-        }
     trigger = mate_pro.get("trigger")
     stop_loss = mate_pro.get("stop_loss")
     targets = mate_pro.get("targets") or {}
@@ -187,6 +188,7 @@ def _mate_pro_from_snapshot(symbol: str, mate_pro: dict) -> dict:
             "model_weights": mate_pro.get("model_weights"),
         },
         "models": models,
+        "backtest_report": backtest_report,
         "snapshot_source": "screener_run",
     })
 
@@ -198,6 +200,12 @@ def _apply_snapshot_mate_pro(result: dict, mate_pro: dict) -> dict:
 
     result["one_line_verdict"] = snapshot_result["one_line_verdict"] or result.get("one_line_verdict")
     result["one_line_verdict_source"] = snapshot_result["one_line_verdict_source"] or result.get("one_line_verdict_source")
+    snapshot_backtest = snapshot_result.get("backtest_report")
+    snapshot_status = ((snapshot_backtest or {}).get("summary") or {}).get("data_status")
+    if snapshot_backtest and snapshot_status != "BACKTEST NOT RUN":
+        result["backtest_report"] = snapshot_backtest
+    else:
+        result["backtest_report"] = result.get("backtest_report") or snapshot_backtest
     result["snapshot_source"] = "screener_run"
 
     result.setdefault("composite", {}).update(snapshot_result["composite"])
@@ -221,7 +229,6 @@ def _apply_snapshot_mate_pro(result: dict, mate_pro: dict) -> dict:
         "swing_ai_v12_2": ("Swing_AI",),
         "swing_ai_v12_1": ("Swing_AI_Hyper",),
         "king": ("KING",),
-        "backtest": ("BACKTEST",),
     }
     scores = mate_pro.get("model_scores") or {}
     verdicts = mate_pro.get("model_verdicts") or {}
@@ -264,7 +271,6 @@ def _verdict_value(row: dict) -> str | None:
 def _mate_pro_snapshot_row(result: dict) -> dict:
     titan = (result.get("models") or {}).get("titan") or {}
     titan_v19 = (result.get("models") or {}).get("titan_v19") or {}
-    backtest = (result.get("models") or {}).get("backtest") or {}
     return {
         "composite_score": result["composite"]["composite_score"],
         "composite_probability": result["composite"]["composite_probability"],
@@ -310,18 +316,7 @@ def _mate_pro_snapshot_row(result: dict) -> dict:
             "selection_action": titan_v19.get("selection_action"),
             "setup_family": titan_v19.get("setup_family"),
         },
-        "backtest": {
-            "model": backtest.get("model"),
-            "backtest_score": backtest.get("backtest_score"),
-            "quality_grade": backtest.get("quality_grade"),
-            "data_status": backtest.get("data_status"),
-            "setup_family": backtest.get("setup_family"),
-            "sample_size": backtest.get("sample_size"),
-            "same_stock_sample_size": backtest.get("same_stock_sample_size"),
-            "peer_sample_size": backtest.get("peer_sample_size"),
-            "data_quality": backtest.get("data_quality"),
-            "metrics": backtest.get("metrics"),
-        },
+        "backtest_report": result.get("backtest_report"),
     }
 
 
