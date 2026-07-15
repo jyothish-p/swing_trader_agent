@@ -62,9 +62,11 @@ def _to_python(obj):
 # RAW DATA EXTRACTION
 # ─────────────────────────────────────────────────
 
-BACKTEST_LOOKBACK_DAYS = 5 * 365 + 10
+BACKTEST_HISTORY_YEARS = 3
+BACKTEST_LOOKBACK_DAYS = BACKTEST_HISTORY_YEARS * 365 + 10
 BACKTEST_MIN_DAILY_BARS = 252
 BACKTEST_IDEAL_DAILY_BARS = 756
+BACKTEST_MAX_PEERS = 3
 _YF_HISTORY_CACHE: dict[str, pd.DataFrame] = {}
 
 
@@ -251,7 +253,7 @@ def _peer_candle_frames(
                 "avg_turnover_cr": round(avg_turnover, 2),
                 "atr_pct": round(peer_atr_pct, 2),
             })
-        if len(frames) >= 12:
+        if len(frames) >= BACKTEST_MAX_PEERS:
             break
     return frames
 
@@ -664,8 +666,8 @@ def _extract_raw_data(db: Session, symbol: str, mode: str = "full") -> dict | No
                 target_turnover_cr=avg_turnover_cr,
                 target_atr_pct=atr_pct,
             ),
-            "nifty_df": _fetch_yf_history("^NSEI", years=5),
-            "sector_index_df": _fetch_yf_history(sector_index_symbol, years=5),
+            "nifty_df": _fetch_yf_history("^NSEI", years=BACKTEST_HISTORY_YEARS),
+            "sector_index_df": _fetch_yf_history(sector_index_symbol, years=BACKTEST_HISTORY_YEARS),
             "backtest_data_notes": data_notes,
         }
 

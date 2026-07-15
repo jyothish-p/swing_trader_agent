@@ -401,6 +401,37 @@ def _repair_run_snapshot(db: Session, run_id: str, computed_results: list[dict])
     _save_run_snapshot(run_id, snapshot, db)
 
 
+def _cache_backtest_report_in_snapshot(db: Session, run_id: str | None, symbol: str, result: dict) -> None:
+    if not run_id or not result.get("backtest_report"):
+        return
+    snapshot = _load_run_snapshot(run_id, db)
+    if not snapshot:
+        return
+
+    changed = False
+    for collection_key in ("stocks", "all_stocks", "top_stocks"):
+        rows = snapshot.get(collection_key) or []
+        for row in rows:
+            if str(row.get("symbol", "")).upper() != symbol.upper():
+                continue
+            mate_pro = row.get("mate_pro") or {}
+            if mate_pro.get("model_weights") != MODEL_WEIGHTS:
+                continue
+            mate_pro["backtest_report"] = result.get("backtest_report")
+            full_models = result.get("models") or {}
+            saved_models = mate_pro.get("models") or {}
+            for model_key, saved_model in saved_models.items():
+                validation = (full_models.get(model_key) or {}).get("backtest_validation")
+                if validation:
+                    saved_model["backtest_validation"] = validation
+            mate_pro["models"] = saved_models
+            row["mate_pro"] = mate_pro
+            changed = True
+
+    if changed:
+        _save_run_snapshot(run_id, snapshot, db)
+
+
 # ── MATE-PRO endpoints (must be BEFORE /{symbol} catch-all) ──
 
 @router.post("/mate-pro/batch")
@@ -545,22 +576,28 @@ def get_mate_pro_analysis(
     snapshot_mate_pro = _snapshot_mate_pro(_load_run_snapshot(run_id, db), symbol) if run_id else None
     if snapshot_mate_pro and not full_backtest:
         return _mate_pro_from_snapshot(symbol, snapshot_mate_pro)
+    snapshot_backtest_status = (((snapshot_mate_pro or {}).get("backtest_report") or {}).get("summary") or {}).get("data_status")
+    if snapshot_mate_pro and full_backtest and snapshot_backtest_status and snapshot_backtest_status != "BACKTEST NOT RUN":
+        return _mate_pro_from_snapshot(symbol, snapshot_mate_pro)
 
     # Auto-download data if missing
     df = get_stock_candles(db, symbol, days=365)
     if df.empty:
         logger.info(f"No data for {symbol}, downloading...")
         bulk_download_historical([symbol], db, full_refresh=False)
-    ensure_symbol_history(symbol, db, years=5, force_refresh=False)
+    ensure_symbol_history(symbol, db, years=3 if full_backtest else 5, force_refresh=False)
 
-    result = run_mate_pro_analysis(db, symbol, allow_llm_verdict=True)
+    result = run_mate_pro_analysis(db, symbol, allow_llm_verdict=not full_backtest)
     if not result:
         if snapshot_mate_pro:
             return _mate_pro_from_snapshot(symbol, snapshot_mate_pro)
         raise HTTPException(status_code=404, detail=f"Insufficient data for MATE-PRO analysis of {symbol}")
 
     if snapshot_mate_pro:
-        return _apply_snapshot_mate_pro(result, snapshot_mate_pro)
+        result = _apply_snapshot_mate_pro(result, snapshot_mate_pro)
+        if full_backtest:
+            _cache_backtest_report_in_snapshot(db, run_id, symbol, result)
+        return result
     return result
 
 
