@@ -537,11 +537,14 @@ def lookup_stock(
 def get_mate_pro_analysis(
     symbol: str,
     run_id: str = Query(None, description="Screener run ID. If supplied, align verdict with that dashboard run."),
+    full_backtest: bool = Query(False, description="Force a fresh full MATE-PRO run even when a run snapshot is available."),
     db: Session = Depends(get_db),
 ):
     """Run all active MATE-PRO engines on a stock."""
     symbol = symbol.upper()
     snapshot_mate_pro = _snapshot_mate_pro(_load_run_snapshot(run_id, db), symbol) if run_id else None
+    if snapshot_mate_pro and not full_backtest:
+        return _mate_pro_from_snapshot(symbol, snapshot_mate_pro)
 
     # Auto-download data if missing
     df = get_stock_candles(db, symbol, days=365)

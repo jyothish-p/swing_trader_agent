@@ -23,15 +23,19 @@ export default function StockDetail() {
   const [priceHistory, setPriceHistory] = useState(null);
   const [matePro, setMatePro] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [mateProLoading, setMateProLoading] = useState(false);
+  const [mateProError, setMateProError] = useState('');
   const [activeTab, setActiveTab] = useState('mate-pro');
   const [selectedEngineKey, setSelectedEngineKey] = useState(null);
 
   const loadData = useCallback(async (isCancelled = () => false) => {
     setLoading(true);
+    setMateProLoading(true);
+    setMateProError('');
     setMatePro(null);
     try {
       const [analysisRes, chartRes, historyRes] = await Promise.all([
-        getAnalysis(symbol, effectiveRunId).catch(() => null),
+        getAnalysis(symbol, effectiveRunId).catch(() => getAnalysis(symbol).catch(() => null)),
         getChartData(symbol, timeframe, 180).catch(() => null),
         getPriceHistory(symbol, 30).catch(() => null),
       ]);
@@ -39,6 +43,7 @@ export default function StockDetail() {
       if (analysisRes) setAnalysis(analysisRes.data);
       if (chartRes) setChartData(chartRes.data);
       if (historyRes) setPriceHistory(historyRes.data);
+      setLoading(false);
 
       // Fetch MATE-PRO separately so we can see errors
       try {
@@ -48,12 +53,16 @@ export default function StockDetail() {
         if (mateProRes?.data) setMatePro(mateProRes.data);
       } catch (mpErr) {
         console.error('MATE-PRO error:', mpErr.response?.status, mpErr.response?.data, mpErr.message);
+        if (!isCancelled()) {
+          setMateProError(mpErr.response?.data?.detail || mpErr.message || 'MATE-PRO analysis is taking longer than expected.');
+        }
       }
     } catch (e) {
       console.error(e);
+      if (!isCancelled()) setLoading(false);
     }
     if (isCancelled()) return;
-    setLoading(false);
+    setMateProLoading(false);
   }, [effectiveRunId, symbol, timeframe]);
 
   useEffect(() => {
@@ -143,7 +152,7 @@ export default function StockDetail() {
               {/* Composite Verdict */}
               <div className="bg-slate-800 rounded-lg p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-white">5-Engine Consensus</h3>
+                  <h3 className="text-lg font-semibold text-white">6-Engine Consensus</h3>
                   <span className={`text-sm font-mono px-2 py-0.5 rounded ${
                     matePro.composite.agreement === 'UNANIMOUS' ? 'bg-emerald-500/20 text-emerald-300' :
                     matePro.composite.agreement === 'MAJORITY' ? 'bg-amber-500/20 text-amber-300' :
@@ -479,7 +488,14 @@ export default function StockDetail() {
 
           {activeTab === 'mate-pro' && !matePro && (
             <div className="bg-slate-800 rounded-lg p-8 text-center">
-              <p className="text-slate-400">MATE-PRO analysis not available. Run the screener first.</p>
+              {mateProLoading ? (
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 className="h-7 w-7 animate-spin text-slate-400" />
+                  <p className="text-slate-400">Loading MATE-PRO engines and backtest report...</p>
+                </div>
+              ) : (
+                <p className="text-slate-400">{mateProError || 'MATE-PRO analysis not available. Run the screener first.'}</p>
+              )}
             </div>
           )}
 
@@ -490,7 +506,14 @@ export default function StockDetail() {
 
           {activeTab === 'report' && !matePro && (
             <div className="bg-slate-800 rounded-lg p-8 text-center">
-              <p className="text-slate-400">Full report is available after MATE-PRO analysis loads.</p>
+              {mateProLoading ? (
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 className="h-7 w-7 animate-spin text-slate-400" />
+                  <p className="text-slate-400">Full report is loading in the background.</p>
+                </div>
+              ) : (
+                <p className="text-slate-400">{mateProError || 'Full report is available after MATE-PRO analysis loads.'}</p>
+              )}
             </div>
           )}
 
