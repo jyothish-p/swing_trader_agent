@@ -24,6 +24,7 @@ export default function StockDetail() {
   const [matePro, setMatePro] = useState(null);
   const [loading, setLoading] = useState(true);
   const [mateProLoading, setMateProLoading] = useState(false);
+  const [backtestLoading, setBacktestLoading] = useState(false);
   const [mateProError, setMateProError] = useState('');
   const [activeTab, setActiveTab] = useState('mate-pro');
   const [selectedEngineKey, setSelectedEngineKey] = useState(null);
@@ -31,6 +32,7 @@ export default function StockDetail() {
   const loadData = useCallback(async (isCancelled = () => false) => {
     setLoading(true);
     setMateProLoading(true);
+    setBacktestLoading(false);
     setMateProError('');
     setMatePro(null);
     try {
@@ -50,7 +52,26 @@ export default function StockDetail() {
         const mateProRes = await getMatePro(symbol, effectiveRunId);
         console.log('MATE-PRO response:', mateProRes.data);
         if (isCancelled()) return;
-        if (mateProRes?.data) setMatePro(mateProRes.data);
+        if (mateProRes?.data) {
+          setMatePro(mateProRes.data);
+          const backtestStatus = mateProRes.data.backtest_report?.summary?.data_status;
+          if (effectiveRunId && backtestStatus === 'BACKTEST NOT RUN') {
+            setBacktestLoading(true);
+            getMatePro(symbol, effectiveRunId, true)
+              .then(fullRes => {
+                if (!isCancelled() && fullRes?.data) setMatePro(fullRes.data);
+              })
+              .catch(fullErr => {
+                console.error('Full backtest error:', fullErr.response?.status, fullErr.response?.data, fullErr.message);
+                if (!isCancelled()) {
+                  setMateProError(fullErr.response?.data?.detail || fullErr.message || 'Full backtest is taking longer than expected.');
+                }
+              })
+              .finally(() => {
+                if (!isCancelled()) setBacktestLoading(false);
+              });
+          }
+        }
       } catch (mpErr) {
         console.error('MATE-PRO error:', mpErr.response?.status, mpErr.response?.data, mpErr.message);
         if (!isCancelled()) {
@@ -270,7 +291,7 @@ export default function StockDetail() {
               )}
 
               {matePro.backtest_report && (
-                <CombinedBacktestReportCard report={matePro.backtest_report} />
+                <CombinedBacktestReportCard report={matePro.backtest_report} isRefreshing={backtestLoading} />
               )}
 
               <div className={`rounded-lg border px-4 py-3 ${sectorMomentumTone}`}>
@@ -501,7 +522,7 @@ export default function StockDetail() {
 
           {/* Full Report Tab */}
           {activeTab === 'report' && matePro && (
-            <FullReport symbol={symbol} matePro={matePro} ta={ta} />
+            <FullReport symbol={symbol} matePro={matePro} ta={ta} backtestLoading={backtestLoading} />
           )}
 
           {activeTab === 'report' && !matePro && (
@@ -765,7 +786,7 @@ function buildEngineChartData(model) {
   });
 }
 
-function FullReport({ symbol, matePro, ta }) {
+function FullReport({ symbol, matePro, ta, backtestLoading = false }) {
   const stockReport = buildStockReport(symbol, matePro, ta);
   const models = orderedModelEntries(matePro.models);
 
@@ -788,19 +809,23 @@ function FullReport({ symbol, matePro, ta }) {
       </div>
 
       {matePro.backtest_report && (
-        <CombinedBacktestReportCard report={matePro.backtest_report} />
+        <CombinedBacktestReportCard report={matePro.backtest_report} isRefreshing={backtestLoading} />
       )}
     </div>
   );
 }
 
-function CombinedBacktestReportCard({ report }) {
+function CombinedBacktestReportCard({ report, isRefreshing = false }) {
   return (
     <div className="bg-slate-800 rounded-lg p-5">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-white">Combined Backtest Report</h3>
-          <p className="text-xs text-slate-400">Historical validation across the {report.included_engine_count || 6} engine models</p>
+          <p className="text-xs text-slate-400">
+            {isRefreshing
+              ? 'Running full historical validation for this stock...'
+              : `Historical validation across the ${report.included_engine_count || 6} engine models`}
+          </p>
         </div>
         <div className="text-right text-xs text-slate-400">
           <div className="font-mono text-white">{report.summary?.backtest_score ?? '-'} / 20</div>
