@@ -13,6 +13,7 @@ Each model takes the same raw technical data from our analysis engine and
 applies its own scoring formula to produce scores, verdicts, and trade plans.
 """
 import logging
+import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -66,7 +67,12 @@ BACKTEST_HISTORY_YEARS = 3
 BACKTEST_LOOKBACK_DAYS = BACKTEST_HISTORY_YEARS * 365 + 10
 BACKTEST_MIN_DAILY_BARS = 252
 BACKTEST_IDEAL_DAILY_BARS = 756
-BACKTEST_MAX_PEERS = 3
+BACKTEST_MAX_PEERS = 2
+BACKTEST_YF_TIMEOUT_SECONDS = 8
+BACKTEST_COMPUTE_BUDGET_SECONDS = 8.0
+BACKTEST_MAX_SCAN_BARS_PER_SOURCE = 360
+BACKTEST_MAX_TRADES_PER_SOURCE = 16
+BACKTEST_MAX_TOTAL_TRADES = 40
 _YF_HISTORY_CACHE: dict[str, pd.DataFrame] = {}
 
 
@@ -143,15 +149,19 @@ def _fetch_yf_history(symbol: str, years: int = 5) -> pd.DataFrame:
 
     candidates = [symbol, *YF_INDEX_FALLBACKS.get(symbol, [])]
     last_error = None
+    end_date = datetime.now().date() + timedelta(days=1)
+    start_date = end_date - timedelta(days=years * 365 + 10)
     for candidate in dict.fromkeys(candidates):
         try:
             data = yf.download(
                 candidate,
-                period=f"{years}y",
+                start=start_date.isoformat(),
+                end=end_date.isoformat(),
                 interval="1d",
                 auto_adjust=True,
                 progress=False,
                 threads=False,
+                timeout=BACKTEST_YF_TIMEOUT_SECONDS,
             )
             frame = _normalize_yf_history(data, candidate)
             if not frame.empty:
@@ -3116,12 +3126,23 @@ def _backtest_simulate_trade(frame: pd.DataFrame, idx: int, family: str, source:
     }
 
 
-def _backtest_collect_trades(frame: pd.DataFrame, current: dict, source: str, source_symbol: str) -> list[dict]:
+def _backtest_collect_trades(
+    frame: pd.DataFrame,
+    current: dict,
+    source: str,
+    source_symbol: str,
+    max_trades: int = BACKTEST_MAX_TRADES_PER_SOURCE,
+    deadline: float | None = None,
+) -> list[dict]:
     trades = []
     if frame.empty:
         return trades
     min_idx = 252 if len(frame) >= 280 else 80
-    for idx in range(min_idx, max(min_idx, len(frame) - 20)):
+    end_idx = max(min_idx, len(frame) - 20)
+    start_idx = max(min_idx, end_idx - BACKTEST_MAX_SCAN_BARS_PER_SOURCE)
+    for idx in range(end_idx - 1, start_idx - 1, -1):
+        if deadline and time.monotonic() >= deadline:
+            break
         family = _backtest_signal_family(frame, idx)
         if not family:
             continue
@@ -3131,6 +3152,8 @@ def _backtest_collect_trades(frame: pd.DataFrame, current: dict, source: str, so
         trade = _backtest_simulate_trade(frame, idx, family, source, source_symbol)
         if trade:
             trades.append(trade)
+            if len(trades) >= max_trades:
+                break
     return trades
 
 
@@ -3175,9 +3198,20 @@ def _score_backtest_engine(data: dict) -> dict:
         weekly_df=weekly_df,
     )
     current = _backtest_current_features(data)
-    same_stock_trades = _backtest_collect_trades(frame, current, "same_stock", data.get("symbol") or "")
+    deadline = time.monotonic() + BACKTEST_COMPUTE_BUDGET_SECONDS
+    same_stock_trades = _backtest_collect_trades(
+        frame,
+        current,
+        "same_stock",
+        data.get("symbol") or "",
+        max_trades=BACKTEST_MAX_TRADES_PER_SOURCE,
+        deadline=deadline,
+    )
     peer_trades: list[dict] = []
     for peer in peer_candles:
+        remaining = BACKTEST_MAX_TOTAL_TRADES - len(same_stock_trades) - len(peer_trades)
+        if remaining <= 0 or time.monotonic() >= deadline:
+            break
         peer_raw_frame = peer.get("frame")
         if peer_raw_frame is None or peer_raw_frame.empty:
             continue
@@ -3188,7 +3222,14 @@ def _score_backtest_engine(data: dict) -> dict:
             sector_index_df=sector_index_df,
             weekly_df=None,
         )
-        peer_trades.extend(_backtest_collect_trades(peer_frame, current, "similar_sector_peer", peer.get("symbol") or ""))
+        peer_trades.extend(_backtest_collect_trades(
+            peer_frame,
+            current,
+            "similar_sector_peer",
+            peer.get("symbol") or "",
+            max_trades=min(BACKTEST_MAX_TRADES_PER_SOURCE, remaining),
+            deadline=deadline,
+        ))
 
     trades = same_stock_trades + peer_trades
 

@@ -19,6 +19,8 @@ from app.models import DailyCandle
 
 logger = logging.getLogger(__name__)
 
+YFINANCE_DOWNLOAD_TIMEOUT_SECONDS = 12
+
 
 def _yf_symbol(symbol: str) -> str:
     """Convert NSE symbol to yfinance format."""
@@ -163,6 +165,7 @@ def bulk_download_historical(
                     auto_adjust=True,
                     threads=True,
                     progress=False,
+                    timeout=YFINANCE_DOWNLOAD_TIMEOUT_SECONDS,
                 )
 
                 if data.empty:
@@ -295,6 +298,7 @@ def ensure_symbol_history(
             auto_adjust=True,
             progress=False,
             threads=False,
+            timeout=YFINANCE_DOWNLOAD_TIMEOUT_SECONDS,
         )
         if df.empty:
             return {

@@ -865,7 +865,7 @@ function CombinedBacktestReportCard({ report, isRefreshing = false, error = '', 
       {!hasRun && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2">
           <span className="text-xs text-slate-400">
-            {isRefreshing ? 'Full backtest is running. This can take around a minute.' : 'This is the fast dashboard snapshot. Run the full backtest to load historical validation.'}
+            {isRefreshing ? 'Full backtest is running. This usually finishes in 10-20 seconds.' : 'This is the fast dashboard snapshot. Run the full backtest to load historical validation.'}
           </span>
           <button
             type="button"
